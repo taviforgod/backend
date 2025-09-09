@@ -12,6 +12,7 @@ import {
   assignRole
 } from '../models/userModel.js';
 import { sendOTP, verifyOTP } from '../utils/otpUtils.js';
+
 const jwtSecret = process.env.JWT_SECRET || 'supersecret';
 
 export const register = async (req, res) => {
@@ -110,7 +111,6 @@ export const login = async (req, res) => {
   const match = await bcrypt.compare(password, user.password_hash);
   if (!match) return res.status(401).json({ message: 'Invalid credentials' });
 
-  
   const roleRes = await db.query(
     `SELECT r.name FROM user_roles ur
      JOIN roles r ON ur.role_id = r.id
@@ -126,11 +126,12 @@ export const login = async (req, res) => {
     { expiresIn: '2h' }
   );
 
+  // Set the cookie for the JWT token
   res.cookie('token', token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: 2 * 60 * 60 * 1000
+    httpOnly: true,         // Cookie is not accessible via JavaScript
+    secure: process.env.NODE_ENV === 'production',  // Secure cookie in production (HTTPS only)
+    sameSite: 'None',       // Allow cross-site cookies
+    maxAge: 2 * 60 * 60 * 1000  // 2 hours expiry
   });
 
   // Return user info including role
@@ -142,7 +143,7 @@ export const login = async (req, res) => {
       phone: user.phone,
       phone_verified: user.phone_verified,
       church_id: user.church_id,
-      role // <-- add role here
+      role // <-- Add role here
     }
   });
 };
@@ -166,6 +167,10 @@ export const phoneVerify = async (req, res) => {
 };
 
 export const logout = async (req, res) => {
-  res.clearCookie('token', { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production' });
+  res.clearCookie('token', { 
+    httpOnly: true, 
+    sameSite: 'None',      // Ensure SameSite is None for cross-site requests
+    secure: process.env.NODE_ENV === 'production'  // Only secure in production
+  });
   res.json({ success: true });
 };
