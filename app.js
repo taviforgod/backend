@@ -19,7 +19,7 @@ import mentorshipRouter from './routes/mentorship.js'
 const app = express();
 
 app.use(cors({
-  origin: process.env.FRONTEND_ORIGIN || 'http://localhost:3000', 
+  origin: process.env.FRONTEND_ORIGIN || 'https://frontend-jvvi.onrender.com', 
   credentials: true
 }));
 
