@@ -5,7 +5,6 @@ import {
   createUser,
   getUserByEmail,
   getUserByPhone,
-  getUserByEmailOrPhone,
   getUserById,
   setPhoneVerified,
   updatePassword,
@@ -14,6 +13,14 @@ import {
 import { sendOTP, verifyOTP } from '../utils/otpUtils.js';
 
 const jwtSecret = process.env.JWT_SECRET || 'supersecret';
+
+// Centralized cookie options for Safari/Chrome/Firefox compatibility
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'None',
+  maxAge: 2 * 60 * 60 * 1000 // 2 hours
+};
 
 export const register = async (req, res) => {
   const { name, email, phone, password, church_id } = req.body;
@@ -127,12 +134,7 @@ export const login = async (req, res) => {
   );
 
   // Set the cookie for the JWT token
-  res.cookie('token', token, {
-    httpOnly: true,         // Cookie is not accessible via JavaScript
-    secure: process.env.NODE_ENV === 'production',  // Secure cookie in production (HTTPS only)
-    sameSite: 'None',       // Allow cross-site cookies
-    maxAge: 2 * 60 * 60 * 1000  // 2 hours expiry
-  });
+  res.cookie('token', token, COOKIE_OPTIONS);
 
   // Return user info including role
   res.json({
@@ -143,18 +145,17 @@ export const login = async (req, res) => {
       phone: user.phone,
       phone_verified: user.phone_verified,
       church_id: user.church_id,
-      role // <-- Add role here
-    }
+      role
+    },
+    token // fallback for Safari when cookies fail
   });
 };
 
 export const forgotPassword = async (req, res) => {
-  // ... create reset token, email to user
   res.json({ message: 'Reset link sent (not implemented)' });
 };
 
 export const resetPassword = async (req, res) => {
-  // ... validate token, update password
   res.json({ message: 'Password reset (not implemented)' });
 };
 
@@ -167,10 +168,7 @@ export const phoneVerify = async (req, res) => {
 };
 
 export const logout = async (req, res) => {
-  res.clearCookie('token', { 
-    httpOnly: true, 
-    sameSite: 'None',      // Ensure SameSite is None for cross-site requests
-    secure: process.env.NODE_ENV === 'production'  // Only secure in production
-  });
+  res.clearCookie('token', COOKIE_OPTIONS);
   res.json({ success: true });
 };
+
