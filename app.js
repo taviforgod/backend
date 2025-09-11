@@ -18,7 +18,7 @@ import milestoneTemplateRoutes from './routes/milestoneTemplates.js';
 import cellModuleRoutes from './routes/cellModuleRoutes.js';
 import nameSafeRoutes from './routes/nameSafeRoutes.js';
 import messageboardRoutes from './routes/messageboardRoutes.js';
-import notificationsRoutes from './routes/notifications.js';
+import notificationsRoutes from './routes/notificationsRoutes.js';
 import foundationRouter from './routes/foundation.js';
 import mentorshipRouter from './routes/mentorship.js';
 
