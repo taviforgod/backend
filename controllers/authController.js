@@ -172,3 +172,32 @@ export const logout = async (req, res) => {
   res.json({ success: true });
 };
 
+export const getCurrentUser = async (req, res) => {
+  try {
+    const user = await getUserById(req.user.userId); // req.user is set by authenticateToken
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const roleRes = await db.query(
+      `SELECT r.name FROM user_roles ur
+       JOIN roles r ON ur.role_id = r.id
+       WHERE ur.user_id = $1 LIMIT 1`,
+      [user.id]
+    );
+    const role = roleRes.rows[0]?.name || 'member';
+
+    res.json({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      phone_verified: user.phone_verified,
+      church_id: user.church_id,
+      role,
+    });
+  } catch (err) {
+    console.error('getCurrentUser error:', err);
+    res.status(500).json({ message: 'Failed to fetch user' });
+  }
+};
+
+
