@@ -5,14 +5,22 @@ import {
   createUser,
   getUserByEmail,
   getUserByPhone,
-  getUserByEmailOrPhone,
   getUserById,
   setPhoneVerified,
   updatePassword,
   assignRole
 } from '../models/userModel.js';
 import { sendOTP, verifyOTP } from '../utils/otpUtils.js';
+
 const jwtSecret = process.env.JWT_SECRET || 'supersecret';
+
+// Centralized cookie options for Safari/Chrome/Firefox compatibility
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'None',
+  maxAge: 2 * 60 * 60 * 1000 // 2 hours
+};
 
 export const register = async (req, res) => {
   const { name, email, phone, password, church_id } = req.body;
@@ -110,7 +118,6 @@ export const login = async (req, res) => {
   const match = await bcrypt.compare(password, user.password_hash);
   if (!match) return res.status(401).json({ message: 'Invalid credentials' });
 
-  
   const roleRes = await db.query(
     `SELECT r.name FROM user_roles ur
      JOIN roles r ON ur.role_id = r.id
@@ -126,12 +133,8 @@ export const login = async (req, res) => {
     { expiresIn: '2h' }
   );
 
-  res.cookie('token', token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: 2 * 60 * 60 * 1000
-  });
+  // Set the cookie for the JWT token
+  res.cookie('token', token, COOKIE_OPTIONS);
 
   // Return user info including role
   res.json({
@@ -142,18 +145,17 @@ export const login = async (req, res) => {
       phone: user.phone,
       phone_verified: user.phone_verified,
       church_id: user.church_id,
-      role // <-- add role here
-    }
+      role
+    },
+    token // fallback for Safari when cookies fail
   });
 };
 
 export const forgotPassword = async (req, res) => {
-  // ... create reset token, email to user
   res.json({ message: 'Reset link sent (not implemented)' });
 };
 
 export const resetPassword = async (req, res) => {
-  // ... validate token, update password
   res.json({ message: 'Password reset (not implemented)' });
 };
 
@@ -166,6 +168,34 @@ export const phoneVerify = async (req, res) => {
 };
 
 export const logout = async (req, res) => {
-  res.clearCookie('token', { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production' });
+  res.clearCookie('token', COOKIE_OPTIONS);
   res.json({ success: true });
+};
+
+export const getCurrentUser = async (req, res) => {
+  try {
+    const user = await getUserById(req.user.userId); // req.user is set by authenticateToken
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const roleRes = await db.query(
+      `SELECT r.name FROM user_roles ur
+       JOIN roles r ON ur.role_id = r.id
+       WHERE ur.user_id = $1 LIMIT 1`,
+      [user.id]
+    );
+    const role = roleRes.rows[0]?.name || 'member';
+
+    res.json({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      phone_verified: user.phone_verified,
+      church_id: user.church_id,
+      role,
+    });
+  } catch (err) {
+    console.error('getCurrentUser error:', err);
+    res.status(500).json({ message: 'Failed to fetch user' });
+  }
 };
