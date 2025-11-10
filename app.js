@@ -19,7 +19,7 @@ import notificationJobRoutes from "./routes/notificationJobRoutes.js";
 import notificationTemplateRoutes from "./routes/notificationTemplateRoutes.js";
 import notificationPreferenceRoutes from "./routes/notificationPreferenceRoutes.js";
 import messageBoardRoutes from "./routes/messageBoardRoutes.js";
-import { notificationRateLimiter } from "./middleware/notificationRateLimiter.js";
+
 
 import foundationRouter from './routes/foundation.js';
 import mentorshipRouter from './routes/mentorship.js';
