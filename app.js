@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
+
 
 // Routes
 import authRoutes from './routes/authRoutes.js';
@@ -51,14 +51,6 @@ app.use(cors({
   credentials: true
 }));
 
-// Global rate limiter
-const globalLimiter = rateLimit({
-  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 60 * 1000,
-  max: Number(process.env.RATE_LIMIT_MAX) || 200,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use(globalLimiter);
 
 // Body parser
 app.use(express.json());
@@ -88,7 +80,7 @@ app.use('/api/visitors', visitorRoutes);
 app.use('/api/weekly-reports', weeklyReportsRoutes);
 
 // Notification system
-app.use("/api/notifications", notificationRateLimiter, notificationRoutes);
+app.use("/api/notifications", notificationRoutes);
 app.use("/api/notification-logs", notificationLogRoutes);
 app.use("/api/notification-jobs", notificationJobRoutes);
 app.use("/api/notification-templates", notificationTemplateRoutes);
