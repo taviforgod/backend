@@ -575,33 +575,3 @@ if (typeof module !== "undefined" && module.exports) {
   };
 }
 
-{/* Absentee Preview */}
-<Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-  <Typography variant="subtitle2">Absentee Preview</Typography>
-  <Box>
-    <Button size="small" onClick={handlePreviewAbsentees} disabled={previewLoading}>
-      {previewLoading ? 'Previewing...' : 'Preview Absentees'}
-    </Button>
-    <Button
-      size="small"
-      onClick={acceptPreviewAsAbsentees}
-      disabled={!previewRows.length}
-    >
-      Accept Preview
-    </Button>
-  </Box>
-</Box>
-<Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 1 }}>
-  {previewRows.length === 0 && !previewLoading && (
-    <Typography variant="body2" color="text.secondary">
-      No absentees found for this selection.
-    </Typography>
-  )}
-  {previewRows.map((r, i) => (
-    <Chip
-      key={i}
-      label={`${r.first_name || ''} ${r.surname || ''} (${r.type || ''})`}
-      size="small"
-    />
-  ))}
-</Box>
