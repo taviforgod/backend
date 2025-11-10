@@ -6,7 +6,7 @@ export function initSocket(server) {
   console.log('[socket] initSocket called');
   if (ioInstance) return ioInstance;
 
-  const origin = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
+  const origin = process.env.FRONTEND_ORIGIN || 'https://frontend-jvvi.onrender.com';
   const io = new Server(server, { cors: { origin, credentials: true } });
   ioInstance = io;
 
