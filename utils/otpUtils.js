@@ -1,7 +1,6 @@
-import crypto from 'crypto';
 import db from '../config/db.js';
 import nodemailer from 'nodemailer';
-import fetch from 'node-fetch'; // Used for Brevo API requests
+import fetch from 'node-fetch';
 
 // -------------------------
 // Email Configuration
@@ -16,7 +15,6 @@ const smtpConfig = {
   from: process.env.EMAIL_FROM || process.env.SMTP_USER,
 };
 
-// Helper to initialize nodemailer (only if SMTP available)
 function getTransporter() {
   if (!smtpConfig.host || !smtpConfig.auth || !smtpConfig.from) return null;
   return nodemailer.createTransport({
@@ -28,7 +26,7 @@ function getTransporter() {
 }
 
 // -------------------------
-// Brevo Fallback (API-based, Render-safe)
+// Brevo Email
 // -------------------------
 async function sendEmailViaBrevo(to, subject, html, text) {
   try {
@@ -58,12 +56,7 @@ async function sendEmailViaBrevo(to, subject, html, text) {
       throw new Error(data?.message || `Brevo API failed with status ${res.status}`);
     }
 
-    if (data?.messageId) {
-      console.log(`✅ Brevo delivered (messageId: ${data.messageId}) to ${to}`);
-    } else {
-      console.warn('⚠️ Brevo accepted but gave no messageId. Check Brevo dashboard logs.', data);
-    }
-
+    console.log(`✅ Brevo delivered (messageId: ${data.messageId || 'N/A'}) to ${to}`);
     return data;
   } catch (err) {
     console.error('❌ Brevo send error:', err);
@@ -75,134 +68,82 @@ async function sendEmailViaBrevo(to, subject, html, text) {
 // sendOTP()
 // -------------------------
 export async function sendOTP(userId, target, type = 'email', opts = {}) {
+  if (!userId) throw new Error('Missing userId for OTP');
+  if (!target) throw new Error('Missing target (email or phone) for OTP');
+  if (!type) type = 'email';
+
+  const ttlMinutes = Number(opts.ttlMinutes ?? 15);
+  const code = opts.code || String(Math.floor(100000 + Math.random() * 900000));
+  const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+
+  console.log('📝 Preparing OTP:', { userId, target, type, code, expiresAt });
+
+  // -------------------------
+  // 1️⃣ Save to DB first
+  // -------------------------
   try {
-    const ttlMinutes = Number(opts.ttlMinutes ?? 15);
-    const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
-    const code =
-      opts.code || String(Math.floor(100000 + Math.random() * 900000));
-
-    await db.query(
-      `INSERT INTO user_verifications (user_id, type, code, target, expires_at, created_at)
-       VALUES ($1, $2, $3, $4, $5, now())`,
-      [userId, String(type), code, String(target), expiresAt]
-    );
-
-    // -------------------------
-    // Delivery Section
-    // -------------------------
-    try {
-      if (type === 'email') {
-        const subject = opts.subject ?? 'Verification Code';
-        const text =
-          opts.text ??
-          `Verification Code\n\nYour verification code is: ${code}\n\nThis code will expire in ${ttlMinutes} minutes.`;
-        const html =
-          opts.html ??
-          `
-            <div style="font-family: Arial, Helvetica, sans-serif; color:#111; padding:24px; background:#f7f9fc;">
-              <div style="max-width:600px; margin:0 auto; background:#fff; border-radius:8px; padding:24px; box-shadow:0 1px 3px rgba(0,0,0,0.08);">
-                <h2 style="margin:0 0 12px 0; font-size:20px; color:#0b4da2;">Verification Code</h2>
-                <p>Your verification code is:</p>
-                <p style="font-size:28px; letter-spacing:2px; margin:0 0 18px 0; font-weight:600; color:#111;">${code}</p>
-                <p>This code will expire in ${ttlMinutes} minutes.</p>
-              </div>
-            </div>
-          `;
-
-        if (process.env.BREVO_API_KEY) {
-          // Prefer Brevo on Render
-          await sendEmailViaBrevo(target, subject, html, text);
-        } else {
-          // Fallback to SMTP if available
-          const transporter = getTransporter();
-          if (transporter) {
-            await transporter.sendMail({
-              from: smtpConfig.from,
-              to: target,
-              subject,
-              text,
-              html,
-            });
-            console.log('✅ Email sent via SMTP to:', target);
-          } else {
-            console.warn('⚠️ No email delivery method configured (neither Brevo nor SMTP)');
-          }
-        }
-      } else if (type === 'phone' && typeof globalThis.sendSMS === 'function') {
-        await globalThis.sendSMS(target, `Your verification code is ${code}`);
-      }
-    } catch (sendErr) {
-      console.error('⚠️ Failed to deliver verification (code persisted):', sendErr);
-    }
-
-    return true;
-  } catch (err) {
-    console.error('sendOTP error', err);
-    return false;
+    const insertQuery = `
+      INSERT INTO user_verifications (user_id, type, code, target, expires_at, created_at)
+      VALUES ($1, $2, $3, $4, $5, now())
+      RETURNING *
+    `;
+    const { rows } = await db.query(insertQuery, [userId, type, code, target, expiresAt]);
+    if (!rows[0]) throw new Error('Failed to insert OTP into DB');
+    console.log('✅ OTP saved to DB:', rows[0]);
+  } catch (dbErr) {
+    console.error('❌ Failed to save OTP to DB:', dbErr);
+    throw dbErr;
   }
-}
 
-// -------------------------
-// verifyOTP()
-// -------------------------
-export async function verifyOTP(
-  userId,
-  code,
-  type = 'email',
-  target = undefined
-) {
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
-
-    const params = [userId, String(type), String(code)];
-    let query = `
-      SELECT id, expires_at, consumed_at
-      FROM user_verifications
-      WHERE user_id = $1
-        AND type = $2
-        AND code = $3
-      ORDER BY created_at DESC
-      LIMIT 1
+  // -------------------------
+  // 2️⃣ Send email (if type=email)
+  // -------------------------
+  if (type === 'email') {
+    const subject = opts.subject ?? 'Verification Code';
+    const text =
+      opts.text ??
+      `Verification Code\n\nYour verification code is: ${code}\n\nThis code will expire in ${ttlMinutes} minutes.`;
+    const html =
+      opts.html ??
+      `
+      <div style="font-family: Arial, Helvetica, sans-serif; color:#111; padding:24px; background:#f7f9fc;">
+        <div style="max-width:600px; margin:0 auto; background:#fff; border-radius:8px; padding:24px; box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+          <h2 style="margin:0 0 12px 0; font-size:20px; color:#0b4da2;">Verification Code</h2>
+          <p>Your verification code is:</p>
+          <p style="font-size:28px; letter-spacing:2px; margin:0 0 18px 0; font-weight:600; color:#111;">${code}</p>
+          <p>This code will expire in ${ttlMinutes} minutes.</p>
+        </div>
+      </div>
     `;
 
-    if (target !== undefined && target !== null) {
-      query = `
-        SELECT id, expires_at, consumed_at
-        FROM user_verifications
-        WHERE user_id = $1
-          AND type = $2
-          AND code = $3
-          AND target = $4
-        ORDER BY created_at DESC
-        LIMIT 1
-      `;
-      params.push(String(target));
+    try {
+      if (process.env.BREVO_API_KEY) {
+        await sendEmailViaBrevo(target, subject, html, text);
+      } else {
+        const transporter = getTransporter();
+        if (transporter) {
+          await transporter.sendMail({ from: smtpConfig.from, to: target, subject, text, html });
+          console.log('✅ Email sent via SMTP to:', target);
+        } else {
+          console.warn('⚠️ No email delivery method configured');
+        }
+      }
+    } catch (sendErr) {
+      console.error('⚠️ OTP saved but email failed:', sendErr);
+      // Don't throw, code is still saved
     }
-
-    const { rows } = await client.query(query, params);
-    const record = rows[0];
-    if (!record) {
-      await client.query('ROLLBACK');
-      return false;
-    }
-
-    if (record.consumed_at || new Date(record.expires_at) < new Date()) {
-      await client.query('ROLLBACK');
-      return false;
-    }
-
-    await client.query(
-      `UPDATE user_verifications SET consumed_at = now() WHERE id = $1`,
-      [record.id]
-    );
-    await client.query('COMMIT');
-    return true;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    console.error('verifyOTP error', err);
-    return false;
-  } finally {
-    client.release();
   }
+
+  // -------------------------
+  // 3️⃣ Optional: SMS
+  // -------------------------
+  if (type === 'phone' && typeof globalThis.sendSMS === 'function') {
+    try {
+      await globalThis.sendSMS(target, `Your verification code is ${code}`);
+    } catch (smsErr) {
+      console.error('⚠️ OTP saved but SMS failed:', smsErr);
+    }
+  }
+
+  return code;
 }
