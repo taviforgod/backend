@@ -176,3 +176,53 @@ export async function markConverted(visitorId, memberId, convertedBy) {
   const v = await getVisitorById(visitorId);
   return v;
 }
+
+/**
+ * Get recent visitors invited by a specific member
+ * Uses invited_by field to find visitors this member brought
+ */
+export async function getVisitorsInvitedByMember(memberId, churchId, recent = 30) {
+  const { rows } = await db.query(
+    `SELECT
+      v.id,
+      v.first_name,
+      v.surname,
+      CONCAT(v.first_name, ' ', COALESCE(v.surname, '')) as full_name,
+      v.contact_primary,
+      v.contact_secondary,
+      v.email,
+      v.home_address,
+      v.status,
+      v.follow_up_status,
+      v.created_at,
+      v.date_of_first_visit,
+      v.how_heard,
+      v.age_group,
+      v.church_affiliation,
+      v.prayer_requests,
+      v.notes,
+      cg.name AS cell_group_name,
+      COALESCE(f.count, 0)::int AS followup_count,
+      f.last_followup_date,
+      CASE
+        WHEN COALESCE(f.count, 0) >= 3 THEN 'done'
+        WHEN COALESCE(f.count, 0) > 0 THEN 'in_progress'
+        ELSE COALESCE(v.follow_up_status, 'pending')
+      END AS follow_up_status_calculated
+    FROM visitors v
+    LEFT JOIN cell_groups cg ON v.cell_group_id = cg.id
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*) AS count, MAX(fu.followup_date) AS last_followup_date
+      FROM visitor_follow_ups fu
+      WHERE fu.visitor_id = v.id
+    ) f ON TRUE
+    WHERE v.church_id = $1
+    AND v.invited_by = $2
+    AND v.deleted_at IS NULL
+    AND v.created_at >= NOW() - INTERVAL '${recent} days'
+    ORDER BY v.created_at DESC
+    LIMIT 10`,
+    [churchId, memberId]
+  );
+  return rows;
+}
