@@ -1,25 +1,11 @@
 /**
  * Weekly Report controller - Express handlers (updated for JSONB model)
- *
- * Endpoints:
- *  - GET  /api/weekly-reports/preview?cell_group_id=&meeting_date=
- *  - POST /api/weekly-reports
- *  - GET  /api/weekly-reports
- *  - GET  /api/weekly-reports/:id
- *  - PUT  /api/weekly-reports/:id
- *  - DELETE /api/weekly-reports/:id
- *  - GET  /api/weekly-reports/:id/export/csv
- *  - GET  /api/weekly-reports/:id/export/xlsx
- *  - GET  /api/weekly-reports/trends?church_id=&nWeeks=
- *  - GET  /api/weekly-reports/export/bulk?church_id=&nWeeks=
- *  - GET  /api/weekly-reports/top-cell?church_id=&meeting_date=
- *  - GET  /api/weekly-reports/bottom-cell?church_id=&meeting_date=
- *  - GET  /api/weekly-reports/leaderboards?church_id=&start_date=&end_date=&limit=
- *
  */
 
 import * as model from '../models/weeklyReportModel.js';
+import * as notificationModel from '../models/notificationModel.js';
 import db from '../config/db.js'; 
+import { getIO } from '../config/socket.js';
 
 function parseId(val) {
   const n = Number(val);
@@ -48,7 +34,6 @@ export async function previewAbsentees(req, res) {
 export async function createWeeklyReport(req, res) {
   try {
     const payload = req.body || {};
-    // prefer transactional creator if available
     const creator =
       typeof model.createWeeklyReportWithAbsentees === 'function'
         ? model.createWeeklyReportWithAbsentees
@@ -60,19 +45,44 @@ export async function createWeeklyReport(req, res) {
       return res.status(500).json({ error: 'Server misconfigured: createWeeklyReport not available' });
     }
 
-    // attach created_by from req.user if available
     if (!payload.created_by && req.user?.id) payload.created_by = req.user.id;
     if (!payload.created_by && req.user?.id === undefined) payload.created_by = null;
 
     const created = await creator(payload);
-    // some creators return row, some return { id }
-    return res.status(201).json(created);
+    res.status(201).json(created);
+
+    // Notification (non-blocking)
+    (async () => {
+      try {
+        const church_id = created?.church_id || req.user?.church_id || null;
+        const user_id = req.user?.userId ?? req.user?.id ?? null;
+        const title = 'Weekly Report Created';
+        const message = `Weekly report for ${created?.meeting_date || ''} created.`;
+        const metadata = { action: 'weekly_report_created', report_id: created?.id ?? null };
+        const link = `/weekly-reports/${created?.id ?? ''}`;
+        const notification = await notificationModel.createNotification({
+          church_id,
+          member_id: null,
+          user_id,
+          title,
+          message,
+          channel: 'inapp',
+          metadata,
+          link
+        });
+        const io = getIO();
+        if (io && church_id) io.to(`church:${church_id}`).emit('notification', notification);
+        if (notification.user_id) io.to(`user:${notification.user_id}`).emit('notification', notification);
+      } catch (nErr) {
+        console.warn('Failed to create notification for createWeeklyReport', nErr?.message || nErr);
+      }
+    })();
   } catch (err) {
     return handleError(res, 'createWeeklyReport', err);
   }
 }
 
-// --- List Weekly Reports ---
+// --- List Weekly Reports (Church-wide) ---
 export async function listWeeklyReports(req, res) {
   try {
     const churchId = parseId(req.query.church_id) || req.user?.church_id || null;
@@ -84,6 +94,46 @@ export async function listWeeklyReports(req, res) {
     return res.json(rows);
   } catch (err) {
     return handleError(res, 'listWeeklyReports', err);
+  }
+}
+
+/* =========================================================
+   ✅ NEW ENDPOINT: Get Weekly Reports by Cell Group
+   Used by MemberDashboard to show “Next Meeting”
+   Route: GET /api/weekly-reports?cell_group_id=123&limit=10
+========================================================= */
+export async function listWeeklyReportsByCell(req, res) {
+  try {
+    const cell_group_id = parseId(req.query.cell_group_id);
+    if (!cell_group_id) return res.status(400).json({ message: 'cell_group_id required' });
+
+    const limit = Number(req.query.limit || 10);
+
+    // Select all columns from weekly_reports plus cell group and leader info
+    const rows = await db.query(
+      `SELECT
+          wr.*,
+          cg.name AS cell_name,
+          cg.zone_id,
+          cg.status_id,
+          cg.leader_id,
+          m.first_name AS leader_first_name,
+          m.surname AS leader_surname,
+          m.contact_primary AS leader_contact,
+          m.email AS leader_email
+        FROM weekly_reports wr
+        LEFT JOIN cell_groups cg ON wr.cell_group_id = cg.id
+        LEFT JOIN members m ON cg.leader_id = m.id
+        WHERE wr.cell_group_id = $1
+          AND (wr.is_deleted IS NULL OR wr.is_deleted = FALSE)
+        ORDER BY wr.meeting_date DESC
+        LIMIT $2`,
+      [cell_group_id, limit]
+    );
+
+    return res.json(rows.rows);
+  } catch (err) {
+    return handleError(res, 'listWeeklyReportsByCell', err);
   }
 }
 
@@ -109,7 +159,34 @@ export async function updateWeeklyReport(req, res) {
 
     const payload = { ...req.body, updated_by: req.user?.id || req.body.updated_by || null };
     const updated = await model.updateWeeklyReport(id, payload);
-    return res.json({ message: 'Updated', report: updated });
+    res.json({ message: 'Updated', report: updated });
+
+    // Notification (non-blocking)
+    (async () => {
+      try {
+        const church_id = updated?.church_id || req.user?.church_id || null;
+        const user_id = req.user?.userId ?? req.user?.id ?? null;
+        const title = 'Weekly Report Updated';
+        const message = `Weekly report for ${updated?.meeting_date || ''} updated.`;
+        const metadata = { action: 'weekly_report_updated', report_id: id };
+        const link = `/weekly-reports/${id}`;
+        const notification = await notificationModel.createNotification({
+          church_id,
+          member_id: null,
+          user_id,
+          title,
+          message,
+          channel: 'inapp',
+          metadata,
+          link
+        });
+        const io = getIO();
+        if (io && church_id) io.to(`church:${church_id}`).emit('notification', notification);
+        if (notification.user_id) io.to(`user:${notification.user_id}`).emit('notification', notification);
+      } catch (nErr) {
+        console.warn('Failed to create notification for updateWeeklyReport', nErr?.message || nErr);
+      }
+    })();
   } catch (err) {
     return handleError(res, 'updateWeeklyReport', err);
   }
@@ -122,7 +199,33 @@ export async function deleteWeeklyReport(req, res) {
     if (!id) return res.status(400).json({ message: 'id required' });
 
     await model.softDeleteWeeklyReport(id, req.user?.id || null);
-    return res.json({ message: 'Deleted' });
+    res.json({ message: 'Deleted' });
+
+    // Notification (non-blocking)
+    (async () => {
+      try {
+        const church_id = req.user?.church_id || null;
+        const user_id = req.user?.userId ?? req.user?.id ?? null;
+        const title = 'Weekly Report Deleted';
+        const message = `Weekly report ${id} was deleted.`;
+        const metadata = { action: 'weekly_report_deleted', report_id: id };
+        const link = `/weekly-reports`;
+        const notification = await notificationModel.createNotification({
+          church_id,
+          member_id: null,
+          user_id,
+          title,
+          message,
+          channel: 'inapp',
+          metadata,
+          link
+        });
+        const io = getIO();
+        if (io && church_id) io.to(`church:${church_id}`).emit('notification', notification);
+      } catch (nErr) {
+        console.warn('Failed to create notification for deleteWeeklyReport', nErr?.message || nErr);
+      }
+    })();
   } catch (err) {
     return handleError(res, 'deleteWeeklyReport', err);
   }
@@ -135,13 +238,9 @@ export async function exportWeeklyReportCSV(req, res) {
     if (!id) return res.status(400).json({ message: 'id required' });
 
     const csvResult = await model.exportWeeklyReportCSV(id);
-    // model.exportWeeklyReportCSV returns a CSV string (or may return Buffer)
     const csvBuffer =
       typeof csvResult === 'string' ? Buffer.from(csvResult, 'utf8') : Buffer.isBuffer(csvResult) ? csvResult : null;
-    if (!csvBuffer) {
-      // fallback: try to stringify
-      return res.status(500).json({ message: 'Failed to generate CSV' });
-    }
+    if (!csvBuffer) return res.status(500).json({ message: 'Failed to generate CSV' });
 
     res.setHeader('Content-Disposition', `attachment; filename="weekly_report_${id}.csv"`);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -158,16 +257,10 @@ export async function exportWeeklyReportXLSX(req, res) {
     if (!id) return res.status(400).json({ message: 'id required' });
 
     const wbOrBuffer = await model.exportWeeklyReportXLSX(id);
-
-    // if workbook (ExcelJS) was returned, convert to buffer
     let buffer;
-    if (wbOrBuffer && typeof wbOrBuffer.xlsx === 'object' && typeof wbOrBuffer.xlsx.writeBuffer === 'function') {
-      buffer = await wbOrBuffer.xlsx.writeBuffer();
-    } else if (Buffer.isBuffer(wbOrBuffer)) {
-      buffer = wbOrBuffer;
-    } else {
-      return res.status(500).json({ message: 'Failed to generate XLSX' });
-    }
+    if (wbOrBuffer?.xlsx?.writeBuffer) buffer = await wbOrBuffer.xlsx.writeBuffer();
+    else if (Buffer.isBuffer(wbOrBuffer)) buffer = wbOrBuffer;
+    else return res.status(500).json({ message: 'Failed to generate XLSX' });
 
     res.setHeader('Content-Disposition', `attachment; filename="weekly_report_${id}.xlsx"`);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -199,15 +292,10 @@ export async function bulkExportEndpoint(req, res) {
 
     const nWeeks = Number(req.query.nWeeks || 12);
     const wbOrBuffer = await model.bulkExportWeeksXLSX(churchId, nWeeks);
-
     let buffer;
-    if (wbOrBuffer && typeof wbOrBuffer.xlsx === 'object' && typeof wbOrBuffer.xlsx.writeBuffer === 'function') {
-      buffer = await wbOrBuffer.xlsx.writeBuffer();
-    } else if (Buffer.isBuffer(wbOrBuffer)) {
-      buffer = wbOrBuffer;
-    } else {
-      return res.status(500).json({ message: 'Failed to generate XLSX' });
-    }
+    if (wbOrBuffer?.xlsx?.writeBuffer) buffer = await wbOrBuffer.xlsx.writeBuffer();
+    else if (Buffer.isBuffer(wbOrBuffer)) buffer = wbOrBuffer;
+    else return res.status(500).json({ message: 'Failed to generate XLSX' });
 
     res.setHeader(
       'Content-Disposition',
@@ -220,112 +308,274 @@ export async function bulkExportEndpoint(req, res) {
   }
 }
 
-/* ========================================================
-   JSON array helpers endpoints (append/remove)
-   - POST   /api/weekly-reports/:id/attendees       { member_id }
-   - DELETE /api/weekly-reports/:id/attendees/:member_id
-   - POST   /api/weekly-reports/:id/visitors        { visitor_id?, name?, followup_action? }
-   - POST   /api/weekly-reports/:id/absentees       { member_id?, visitor_id?, reason, followup_action? }
-======================================================== */
-export async function addAttendeeEndpoint(req, res) {
+/**
+ * GET /api/weekly-reports/my/attendance/history
+ * Get current member's attendance history (last 12 meetings)
+ */
+export const getMyAttendanceHistory = async (req, res) => {
   try {
-    const reportId = parseId(req.params.id);
-    const member_id = parseId(req.body.member_id || req.params.member_id);
-    if (!reportId || !member_id) return res.status(400).json({ message: 'report id and member_id required' });
+    const { user } = req;
+    if (!user) return res.status(401).json({ error: 'Not authenticated' });
 
-    const row = await model.addAttendee(reportId, member_id);
-    return res.json({ message: 'attendee added', report: row });
+    // Get member record for current user
+    const memberRes = await db.query(
+      `SELECT id FROM members WHERE user_id = $1 AND church_id = $2`,
+      [user.id, user.church_id]
+    );
+    if (!memberRes.rows.length) return res.status(404).json({ error: 'Member not found' });
+    const memberId = memberRes.rows[0].id;
+
+    // Get cell_members.id entries for this member (these are what's stored in attendees)
+    const cellMembersRes = await db.query(
+      `SELECT id, cell_group_id FROM cell_members WHERE member_id = $1`,
+      [memberId]
+    );
+    if (!cellMembersRes.rows.length) return res.status(404).json({ error: 'Not assigned to a cell' });
+    
+    const cellMemberIds = cellMembersRes.rows.map(r => r.id);
+    const cellGroupIds = cellMembersRes.rows.map(r => r.cell_group_id);
+
+    // Check attendance: attendees contains cell_members.id objects
+    const historyRes = await db.query(
+      `SELECT 
+        wr.id,
+        wr.meeting_date,
+        wr.cell_group_id,
+        cg.name AS cell_name,
+        EXISTS(
+          SELECT 1 FROM jsonb_array_elements(coalesce(wr.attendees, '[]'::jsonb)) AS elem
+          WHERE (elem->>'member_id')::bigint = ANY($1)
+        ) AS present,
+        COALESCE(jsonb_array_length(coalesce(wr.attendees, '[]'::jsonb)), 0) AS total_attendees
+      FROM weekly_reports wr
+      LEFT JOIN cell_groups cg ON wr.cell_group_id = cg.id
+      WHERE wr.cell_group_id = ANY($2)
+        AND (wr.is_deleted IS NULL OR wr.is_deleted = FALSE)
+      ORDER BY wr.meeting_date DESC
+      LIMIT 12`,
+      [cellMemberIds, cellGroupIds]
+    );
+
+    res.json(historyRes.rows);
   } catch (err) {
-    return handleError(res, 'addAttendeeEndpoint', err);
+    console.error('Error fetching attendance history:', err);
+    res.status(500).json({ error: 'Failed to fetch attendance history' });
   }
-}
+};
 
-export async function removeAttendeeEndpoint(req, res) {
+// --- Get My Weekly Reports (used by MemberDashboard summary) ---
+export const getMyWeeklyReports = async (req, res) => {
   try {
-    const reportId = parseId(req.params.id);
-    const member_id = parseId(req.params.member_id || req.body.member_id);
-    if (!reportId || !member_id) return res.status(400).json({ message: 'report id and member_id required' });
+    const userId = req.user?.userId ?? req.user?.id;
+    const church_id = req.user?.church_id;
+    if (!userId || !church_id) return res.status(401).json({ error: 'Not authenticated' });
 
-    const row = await model.removeAttendee(reportId, member_id);
-    return res.json({ message: 'attendee removed', report: row });
+    // Get memberId for this user
+    const memberRes = await db.query(
+      'SELECT id FROM members WHERE user_id = $1 AND church_id = $2 LIMIT 1',
+      [userId, church_id]
+    );
+    if (!memberRes.rows.length) return res.status(404).json({ error: 'No member record for this user' });
+    const memberId = memberRes.rows[0].id;
+
+    // Get cell_members.id entries for this member (these are stored in attendees)
+    const cellMembersRes = await db.query(
+      `SELECT id, cell_group_id FROM cell_members WHERE member_id = $1`,
+      [memberId]
+    );
+    if (!cellMembersRes.rows.length) return res.json({ reports: [], attendanceHistory: [], nextMeetingDate: null });
+    
+    const cellMemberIds = cellMembersRes.rows.map(r => r.id);
+    const cellGroupIds = cellMembersRes.rows.map(r => r.cell_group_id);
+
+    // Get last 10 weekly reports for these cell groups with attendance check
+    const reportsRes = await db.query(
+      `SELECT wr.*,
+              cg.name AS cell_name,
+              m.first_name AS leader_first_name,
+              m.surname AS leader_surname,
+              m.id AS leader_id,
+              EXISTS(
+                SELECT 1 FROM jsonb_array_elements(coalesce(wr.attendees, '[]'::jsonb)) AS elem
+                WHERE (elem->>'member_id')::bigint = ANY($1::bigint[])
+              ) AS user_attended
+         FROM weekly_reports wr
+         LEFT JOIN cell_groups cg ON wr.cell_group_id = cg.id
+         LEFT JOIN members m ON cg.leader_id = m.id
+         WHERE wr.cell_group_id = ANY($2::bigint[])
+         ORDER BY wr.meeting_date DESC
+         LIMIT 10`,
+      [cellMemberIds, cellGroupIds]
+    );
+
+    // Build attendance history and next meeting date
+    const attendanceHistory = [];
+    let nextMeetingDate = null;
+    for (const rep of reportsRes.rows) {
+      attendanceHistory.push(rep.user_attended ? 1 : 0);
+      if (!nextMeetingDate && rep.next_meeting_date) nextMeetingDate = rep.next_meeting_date;
+    }
+
+    res.json({
+      reports: reportsRes.rows,
+      attendanceHistory,
+      nextMeetingDate
+    });
   } catch (err) {
-    return handleError(res, 'removeAttendeeEndpoint', err);
+    console.error('getMyWeeklyReports error', err);
+    res.status(500).json({ error: err.message || 'Failed to fetch my weekly reports' });
   }
-}
+};
 
-export async function addVisitorEndpoint(req, res) {
-  try {
-    const reportId = parseId(req.params.id);
-    if (!reportId) return res.status(400).json({ message: 'report id required' });
-    const visitorObj = req.body || {};
-    const row = await model.addVisitor(reportId, visitorObj);
-    return res.json({ message: 'visitor added', report: row });
-  } catch (err) {
-    return handleError(res, 'addVisitorEndpoint', err);
-  }
-}
-
+/**
+ * Add an absentee to a weekly report
+ */
 export async function addAbsenteeEndpoint(req, res) {
   try {
     const reportId = parseId(req.params.id);
-    if (!reportId) return res.status(400).json({ message: 'report id required' });
-    const absenteeObj = req.body || {};
-    // ensure reason is provided where possible
-    if (!absenteeObj.reason) absenteeObj.reason = absenteeObj.expected ? 'expected' : 'unknown';
+    if (!reportId) return res.status(400).json({ message: 'id required' });
 
-    const row = await model.addAbsentee(reportId, absenteeObj);
-    return res.json({ message: 'absentee added', report: row });
+    const { member_id } = req.body;
+    if (!member_id) return res.status(400).json({ message: 'member_id required' });
+
+    const updated = await model.addAbsentee(reportId, member_id);
+    res.json({ message: 'Absentee added', report: updated });
   } catch (err) {
     return handleError(res, 'addAbsenteeEndpoint', err);
   }
 }
 
-/* ========================================================
-   Analytics endpoints
-   - GET /api/weekly-reports/top-cell?church_id=&meeting_date=
-   - GET /api/weekly-reports/bottom-cell?church_id=&meeting_date=
-   - GET /api/weekly-reports/leaderboards?church_id=&start_date=&end_date=&limit=
-======================================================== */
-export async function topCellForWeek(req, res) {
+/**
+ * Add a visitor to a weekly report
+ */
+export async function addVisitorEndpoint(req, res) {
   try {
-    const churchId = parseId(req.query.church_id) || req.user?.church_id;
-    const meetingDate = req.query.meeting_date;
-    if (!churchId || !meetingDate) return res.status(400).json({ message: 'church_id and meeting_date required' });
+    const reportId = parseId(req.params.id);
+    if (!reportId) return res.status(400).json({ message: 'id required' });
 
-    const top = await model.getTopCellForWeek(churchId, meetingDate);
-    return res.json(top || {});
+    const { visitor_name, visitor_contact } = req.body;
+    if (!visitor_name) return res.status(400).json({ message: 'visitor_name required' });
+
+    const updated = await model.addVisitor(reportId, { visitor_name, visitor_contact });
+    res.json({ message: 'Visitor added', report: updated });
   } catch (err) {
-    return handleError(res, 'topCellForWeek', err);
+    return handleError(res, 'addVisitorEndpoint', err);
   }
 }
 
+/**
+ * Add an attendee to a weekly report
+ */
+export async function addAttendeeEndpoint(req, res) {
+  try {
+    const reportId = parseId(req.params.id);
+    if (!reportId) return res.status(400).json({ message: 'id required' });
+
+    const { member_id, attendee_meta = {} } = req.body;
+    if (!member_id) return res.status(400).json({ message: 'member_id required' });
+
+    // Prefer model.addAttendee if available, otherwise try generic update
+    if (typeof model.addAttendee === 'function') {
+      const updated = await model.addAttendee(reportId, member_id, attendee_meta);
+      return res.json({ message: 'Attendee added', report: updated });
+    }
+
+    // Fallback: read, modify attendees JSONB and save
+    const report = await model.getWeeklyReportDetails(reportId);
+    if (!report) return res.status(404).json({ message: 'Report not found' });
+
+    const attendees = Array.isArray(report.attendees) ? report.attendees.slice() : [];
+    attendees.push({ member_id, ...attendee_meta });
+    const updated = await model.updateWeeklyReport(reportId, { attendees, updated_by: req.user?.id || null });
+    return res.json({ message: 'Attendee added (fallback)', report: updated });
+  } catch (err) {
+    return handleError(res, 'addAttendeeEndpoint', err);
+  }
+}
+
+/**
+ * Get the bottom performing cell group for a given week
+ */
 export async function bottomCellForWeek(req, res) {
   try {
     const churchId = parseId(req.query.church_id) || req.user?.church_id;
     const meetingDate = req.query.meeting_date;
-    if (!churchId || !meetingDate) return res.status(400).json({ message: 'church_id and meeting_date required' });
+    
+    if (!churchId) return res.status(400).json({ message: 'church_id required' });
+    if (!meetingDate) return res.status(400).json({ message: 'meeting_date required' });
 
-    const bottom = await model.getBottomCellForWeek(churchId, meetingDate);
-    return res.json(bottom || {});
+    const result = await model.bottomCellForWeek(churchId, meetingDate);
+    res.json(result);
   } catch (err) {
     return handleError(res, 'bottomCellForWeek', err);
   }
 }
 
+/**
+ * Get leaderboards (top performing cell groups)
+ */
 export async function leaderboardsEndpoint(req, res) {
   try {
     const churchId = parseId(req.query.church_id) || req.user?.church_id;
-    const startDate = req.query.start_date;
-    const endDate = req.query.end_date;
-    const limit = Number(req.query.limit || 10);
+    const nWeeks = Number(req.query.nWeeks || 12);
+    
+    if (!churchId) return res.status(400).json({ message: 'church_id required' });
 
-    if (!churchId || !startDate || !endDate) {
-      return res.status(400).json({ message: 'church_id, start_date and end_date are required' });
-    }
-
-    const boards = await model.getLeaderboards(churchId, startDate, endDate, limit);
-    return res.json(boards);
+    const result = await model.leaderboards(churchId, nWeeks);
+    res.json(result);
   } catch (err) {
     return handleError(res, 'leaderboardsEndpoint', err);
+  }
+}
+
+/**
+ * Remove an attendee from a weekly report
+ */
+export async function removeAttendeeEndpoint(req, res) {
+  try {
+    const reportId = parseId(req.params.id);
+    if (!reportId) return res.status(400).json({ message: 'id required' });
+
+    // Expect either attendee_id (cell_members.id stored in attendees) or member_id
+    const { attendee_id, member_id } = req.body;
+    if (!attendee_id && !member_id) {
+      return res.status(400).json({ message: 'attendee_id or member_id required' });
+    }
+
+    // Prefer explicit attendee_id if provided
+    const removed = typeof model.removeAttendee === 'function'
+      ? await model.removeAttendee(reportId, attendee_id ?? member_id)
+      : null;
+
+    if (removed === null) {
+      return res.status(500).json({ message: 'Server misconfigured: removeAttendee not available' });
+    }
+
+    res.json({ message: 'Attendee removed', result: removed });
+  } catch (err) {
+    return handleError(res, 'removeAttendeeEndpoint', err);
+  }
+}
+
+/**
+ * Get the top performing cell group for a given week
+ */
+export async function topCellForWeek(req, res) {
+  try {
+    const churchId = parseId(req.query.church_id) || req.user?.church_id;
+    const meetingDate = req.query.meeting_date;
+
+    if (!churchId) return res.status(400).json({ message: 'church_id required' });
+    if (!meetingDate) return res.status(400).json({ message: 'meeting_date required' });
+
+    const result = typeof model.topCellForWeek === 'function'
+      ? await model.topCellForWeek(churchId, meetingDate)
+      : null;
+
+    if (result === null) return res.status(500).json({ message: 'Server misconfigured: topCellForWeek not available' });
+
+    res.json(result);
+  } catch (err) {
+    return handleError(res, 'topCellForWeek', err);
   }
 }
