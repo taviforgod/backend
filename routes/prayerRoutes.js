@@ -1,33 +1,23 @@
 import express from 'express';
-import {
-  listPrayers,
-  getPrayerCtrl,
-  createPrayerCtrl,
-  updatePrayerCtrl,
-  assignPrayerCtrl,
-  addFollowupCtrl,
-  closePrayerCtrl,
-  urgentCountCtrl,
-  slaCtrl,
-  trendCtrl
-} from '../controllers/prayerController.js';
-import { authenticateToken } from '../middleware/authMiddleware.js';
+import * as prayerCtrl from '../controllers/prayerController.js';
+import * as membersCtrl from '../controllers/memberController.js';
+import {authenticateToken} from '../middleware/authMiddleware.js';
 import { requirePermission } from '../middleware/rbacMiddleware.js';
 
 const router = express.Router();
 
-router.get('/', authenticateToken, requirePermission('view_prayer_requests'), listPrayers);
-router.get('/urgent-count', authenticateToken, requirePermission('view_prayer_requests'), urgentCountCtrl);
-router.get('/sla', authenticateToken, requirePermission('view_prayer_requests'), slaCtrl);
-router.get('/trends', authenticateToken, requirePermission('view_prayer_requests'), trendCtrl);
+router.use(authenticateToken);
 
-router.post('/', authenticateToken, requirePermission('create_prayer_request'), createPrayerCtrl);
+router.get('/urgent-count', requirePermission('view_prayer'), prayerCtrl.getUrgentCount);
 
-router.get('/:id', authenticateToken, requirePermission('view_prayer_requests'), getPrayerCtrl);
-router.put('/:id', authenticateToken, requirePermission('update_prayer_request'), updatePrayerCtrl);
+router.get('/', requirePermission('view_prayer'), prayerCtrl.list);
+router.get('/:id', requirePermission('view_prayer'), prayerCtrl.getById);
+router.post('/', requirePermission('create_prayer'), prayerCtrl.create);
+router.post('/:id/assign', requirePermission('assign_prayer'), prayerCtrl.assign);
+router.post('/:id/followups', requirePermission('manage_prayer_followups'), prayerCtrl.addFollowup);
+router.post('/:id/close', requirePermission('close_prayer'), prayerCtrl.close);
 
-router.post('/:id/assign', authenticateToken, requirePermission('assign_prayer_request'), assignPrayerCtrl);
-router.post('/:id/followups', authenticateToken, requirePermission('update_prayer_request'), addFollowupCtrl);
-router.post('/:id/close', authenticateToken, requirePermission('close_prayer_request'), closePrayerCtrl);
+// leaders passthrough for frontend
+router.get('/leaders/list', requirePermission('view_members'), membersCtrl.getLeaders);
 
 export default router;
