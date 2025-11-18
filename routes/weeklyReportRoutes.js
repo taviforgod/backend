@@ -1,39 +1,67 @@
 import express from 'express';
-import * as ctrl from '../controllers/weeklyReportController.js';
+import {
+  listWeeklyReportsByCell,
+  listWeeklyReports,
+  getMyWeeklyReports,
+  previewAbsentees,
+  topCellForWeek,
+  bottomCellForWeek,
+  leaderboardsEndpoint,
+  createWeeklyReport,
+  getWeeklyTrendsEndpoint,
+  bulkExportEndpoint,
+  addAttendeeEndpoint,
+  removeAttendeeEndpoint,
+  addVisitorEndpoint,
+  addAbsenteeEndpoint,
+  exportWeeklyReportCSV,
+  exportWeeklyReportXLSX,
+  getWeeklyReportDetails,
+  updateWeeklyReport,
+  deleteWeeklyReport
+} from '../controllers/weeklyReportController.js';
 import { authenticateToken } from '../middleware/authMiddleware.js';
+import { getMyAttendanceHistory } from '../controllers/weeklyReportController.js';
 
 const router = express.Router();
 
 // --- Preview Absentees ---
-router.post('/preview', authenticateToken, ctrl.previewAbsentees);
+router.post('/preview', authenticateToken, previewAbsentees);
 
-// --- Analytics / Leaderboards (non-id routes) ---
-router.get('/top-cell', authenticateToken, ctrl.topCellForWeek);
-router.get('/bottom-cell', authenticateToken, ctrl.bottomCellForWeek);
-router.get('/leaderboards', authenticateToken, ctrl.leaderboardsEndpoint);
+// --- Analytics / Leaderboards ---
+router.get('/top-cell', authenticateToken, topCellForWeek);
+router.get('/bottom-cell', authenticateToken, bottomCellForWeek);
+router.get('/leaderboards', authenticateToken, leaderboardsEndpoint);
 
 // --- CRUD Operations + collection-level exports ---
-router.post('/', authenticateToken, ctrl.createWeeklyReport);
-router.get('/', authenticateToken, ctrl.listWeeklyReports);
-router.get('/trends', authenticateToken, ctrl.getWeeklyTrendsEndpoint);
-router.get('/export/bulk', authenticateToken, ctrl.bulkExportEndpoint);
+router.post('/', authenticateToken, createWeeklyReport);
+router.get('/my', authenticateToken, getMyWeeklyReports);
+router.get('/', authenticateToken, (req, res, next) => {
+  if (req.query.church_id) {
+    return listWeeklyReports(req, res, next); // all reports for church
+  }
+  return listWeeklyReportsByCell(req, res, next); // reports for cell group
+});
 
-// --- JSON array helpers for a specific report (place BEFORE the generic :id routes) ---
-// Add / remove attendees
-router.post('/:id/attendees', authenticateToken, ctrl.addAttendeeEndpoint);
-router.delete('/:id/attendees/:member_id', authenticateToken, ctrl.removeAttendeeEndpoint);
+router.get('/trends', authenticateToken, getWeeklyTrendsEndpoint);
+router.get('/export/bulk', authenticateToken, bulkExportEndpoint);
 
-// Add visitors and absentees
-router.post('/:id/visitors', authenticateToken, ctrl.addVisitorEndpoint);
-router.post('/:id/absentees', authenticateToken, ctrl.addAbsenteeEndpoint);
+// --- JSON array helpers for a specific report ---
+router.post('/:id/attendees', authenticateToken, addAttendeeEndpoint);
+router.delete('/:id/attendees/:member_id', authenticateToken, removeAttendeeEndpoint);
+router.post('/:id/visitors', authenticateToken, addVisitorEndpoint);
+router.post('/:id/absentees', authenticateToken, addAbsenteeEndpoint);
 
-// --- Export endpoints for a specific report (keep before generic :id GET/PUT/DELETE) ---
-router.get('/:id/export/csv', authenticateToken, ctrl.exportWeeklyReportCSV);
-router.get('/:id/export/xlsx', authenticateToken, ctrl.exportWeeklyReportXLSX);
+// --- Export endpoints for a specific report ---
+router.get('/:id/export/csv', authenticateToken, exportWeeklyReportCSV);
+router.get('/:id/export/xlsx', authenticateToken, exportWeeklyReportXLSX);
 
 // --- Single-report CRUD ---
-router.get('/:id', authenticateToken, ctrl.getWeeklyReportDetails);
-router.put('/:id', authenticateToken, ctrl.updateWeeklyReport);
-router.delete('/:id', authenticateToken, ctrl.deleteWeeklyReport);
+router.get('/:id', authenticateToken, getWeeklyReportDetails);
+router.put('/:id', authenticateToken, updateWeeklyReport);
+router.delete('/:id', authenticateToken, deleteWeeklyReport);
+
+// Add this route BEFORE /:id routes:
+router.get('/my/attendance/history', authenticateToken, getMyAttendanceHistory);
 
 export default router;
