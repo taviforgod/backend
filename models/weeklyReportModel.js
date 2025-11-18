@@ -29,18 +29,28 @@ export async function computeAbsenteesUsingRoster(cell_group_id, meeting_date, e
     if (!cell_group_id || !meeting_date) return [];
 
     // Use attendeeIds from input if provided, otherwise fetch from DB
-    let attendeeIds = new Set();
+    let attendeeMemberIds = new Set();
     if (Array.isArray(attendeeIdsInput) && attendeeIdsInput.length) {
-      attendeeIds = new Set(attendeeIdsInput.map(Number));
+      attendeeMemberIds = new Set(attendeeIdsInput.map(Number));
     } else {
+      // Extract cell_members.id from weekly_reports.attendees JSONB
       const attendRes = await db.query(
-        `SELECT wra.value->>'member_id' AS member_id
+        `SELECT DISTINCT (elem->>'member_id')::bigint AS cell_member_id
          FROM weekly_reports wr,
-              jsonb_array_elements(wr.attendees) AS wra(value)
+              jsonb_array_elements(coalesce(wr.attendees, '[]'::jsonb)) AS elem
          WHERE wr.cell_group_id = $1 AND wr.meeting_date = $2`,
         [cell_group_id, meeting_date]
       );
-      attendeeIds = new Set((attendRes.rows || []).map(r => Number(r.member_id)));
+      const cellMemberIds = (attendRes.rows || []).map(r => r.cell_member_id).filter(Boolean);
+
+      if (cellMemberIds.length > 0) {
+        // Map cell_members.id -> members.id
+        const mapRes = await db.query(
+          `SELECT DISTINCT member_id FROM cell_members WHERE id = ANY($1)`,
+          [cellMemberIds]
+        );
+        (mapRes.rows || []).forEach(r => attendeeMemberIds.add(r.member_id));
+      }
     }
 
     const membersRes = await db.query(
@@ -67,7 +77,7 @@ export async function computeAbsenteesUsingRoster(cell_group_id, meeting_date, e
     }
 
     const absentees = (membersRes.rows || [])
-      .filter(m => !attendeeIds.has(m.id) && !onLeaveIds.has(m.id))
+      .filter(m => !attendeeMemberIds.has(m.id) && !onLeaveIds.has(m.id))
       .map(m => ({
         type: "member",
         member_id: m.id,
@@ -209,18 +219,25 @@ export async function createWeeklyReport(reportData) {
    Get / List / Update / Delete using new JSONB model
 ======================================================== */
 export async function listWeeklyReports(churchId, { limit = 50, offset = 0 } = {}) {
-  const { rows } = await db.query(
-    `SELECT wr.*, cg.name AS cell_group_name,
-            CONCAT(m.first_name,' ',m.surname) AS submitted_by_name
-     FROM weekly_reports wr
-     JOIN cell_groups cg ON cg.id = wr.cell_group_id
-     LEFT JOIN members m ON m.id = wr.submitted_by
-     WHERE wr.church_id = $1 AND wr.is_deleted = FALSE
-     ORDER BY wr.meeting_date DESC
-     LIMIT $2 OFFSET $3`,
+  return db.query(
+    `SELECT
+      wr.*,
+      cg.name AS cell_name,
+      cg.zone_id,
+      cg.status_id,
+      cg.leader_id,
+      m.first_name AS leader_first_name,
+      m.surname AS leader_surname,
+      m.contact_primary AS leader_contact,
+      m.email AS leader_email
+    FROM weekly_reports wr
+    LEFT JOIN cell_groups cg ON wr.cell_group_id = cg.id
+    LEFT JOIN members m ON cg.leader_id = m.id
+    WHERE cg.church_id = $1
+    ORDER BY wr.meeting_date DESC
+    LIMIT $2 OFFSET $3`,
     [churchId, limit, offset]
   );
-  return rows;
 }
 
 export async function getWeeklyReportDetails(reportId) {
@@ -287,7 +304,15 @@ export async function softDeleteWeeklyReport(reportId, userId) {
 ======================================================== */
 export async function addAttendee(reportId, member_id) {
   if (!reportId || !member_id) return null;
-  const obj = { member_id, joined_at: new Date().toISOString() };
+  
+  // Get the actual joined_at from cell_members for this member
+  const cmRes = await db.query(
+    `SELECT joined_at FROM cell_members WHERE member_id = $1 ORDER BY joined_at DESC LIMIT 1`,
+    [member_id]
+  );
+  const joinedAt = cmRes.rows[0]?.joined_at || new Date().toISOString();
+  
+  const obj = { member_id, joined_at: joinedAt };
   const { rows } = await db.query(
     `UPDATE weekly_reports
      SET attendees = attendees || $2::jsonb, updated_at = CURRENT_TIMESTAMP
@@ -334,7 +359,25 @@ export async function addVisitor(reportId, visitorObj) {
 
 export async function addAbsentee(reportId, absenteeObj) {
   if (!reportId || !absenteeObj) return null;
-  const a = normalizeAbsenteesArray([absenteeObj])[0];
+  
+  // If member_id provided, fetch joined_at from cell_members
+  let createdAt = absenteeObj.created_at || new Date().toISOString();
+  if (absenteeObj.member_id) {
+    const cmRes = await db.query(
+      `SELECT joined_at FROM cell_members WHERE member_id = $1 ORDER BY joined_at DESC LIMIT 1`,
+      [absenteeObj.member_id]
+    );
+    createdAt = cmRes.rows[0]?.joined_at || createdAt;
+  }
+  
+  const a = {
+    member_id: absenteeObj.member_id || null,
+    visitor_id: absenteeObj.visitor_id || null,
+    reason: absenteeObj.reason || "unknown",
+    followup_action: absenteeObj.followup_action || null,
+    created_at: createdAt
+  };
+  
   const { rows } = await db.query(
     `UPDATE weekly_reports
      SET absentees = absentees || $2::jsonb, updated_at = CURRENT_TIMESTAMP
@@ -574,4 +617,3 @@ if (typeof module !== "undefined" && module.exports) {
     bulkExportWeeksXLSX
   };
 }
-
