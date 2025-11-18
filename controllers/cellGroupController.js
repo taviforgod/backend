@@ -352,31 +352,107 @@ export const getCellGroupFormLookups = async (req, res) => {
 
 export const getMyCellGroups = async (req, res) => {
   try {
-    // support tokens that set either userId or id on req.user
     const userId = req.user?.userId ?? req.user?.id;
     const church_id = req.user?.church_id ?? req.user?.churchId ?? req.user?.church_id;
     if (!userId || !church_id) return res.status(401).json({ error: 'Not authenticated' });
 
+    // Map userId to memberId
+    const memberRes = await db.query(
+      'SELECT id FROM members WHERE user_id = $1 AND church_id = $2 LIMIT 1',
+      [userId, church_id]
+    );
+    if (!memberRes.rows.length) return res.status(404).json({ error: 'No member record for this user' });
+    const memberId = memberRes.rows[0].id;
+
+    // Fetch cell groups
     const q = `
       SELECT cg.*, z.name AS zone_name, st.name AS status_name,
-             m.first_name AS leader_first_name, m.surname AS leader_surname,
-             (SELECT COUNT(*) FROM cell_members cm WHERE cm.cell_group_id = cg.id AND cm.is_active) AS member_count,
-             (SELECT COUNT(*) FROM cell_members cm WHERE cm.cell_group_id = cg.id AND cm.role_id IN (
-                 SELECT id FROM roles WHERE name IN ('cell_exec','cell_assistant','cell_secretary','cell_treasurer')
-               ) AND cm.is_active) AS exec_count
+             m.first_name AS leader_first_name, m.surname AS leader_surname, m.contact_primary AS leader_contact, m.email AS leader_email, m.id AS leader_id,
+             (SELECT COUNT(*) FROM cell_members cm WHERE cm.cell_group_id = cg.id AND cm.is_active) AS members_count
       FROM cell_groups cg
       LEFT JOIN zones z ON cg.zone_id = z.id
       LEFT JOIN status_types st ON cg.status_id = st.id
       LEFT JOIN members m ON cg.leader_id = m.id
       LEFT JOIN cell_members cmm ON cmm.cell_group_id = cg.id
       WHERE cg.church_id = $2 AND (cg.leader_id = $1 OR cmm.member_id = $1)
-      GROUP BY cg.id, z.name, st.name, m.first_name, m.surname
+      GROUP BY cg.id, z.name, st.name, m.first_name, m.surname, m.contact_primary, m.email, m.id
       ORDER BY cg.name
     `;
-    const { rows } = await db.query(q, [userId, church_id]);
-    return res.json(rows);
+    const { rows } = await db.query(q, [memberId, church_id]);
+
+    // Map leader, zone, and fetch members for each group
+    const result = [];
+    for (const row of rows) {
+      const group = {
+        ...row,
+        leader: {
+          first_name: row.leader_first_name,
+          surname: row.leader_surname,
+          id: row.leader_id,
+          contact_primary: row.leader_contact,
+          email: row.leader_email
+        },
+        zone: row.zone_name,
+      };
+
+      // Fetch members for this group
+      const membersRes = await db.query(
+        `SELECT cm.*, mb.first_name, mb.surname
+         FROM cell_members cm
+         LEFT JOIN members mb ON cm.member_id = mb.id
+         WHERE cm.cell_group_id = $1 AND cm.is_active = TRUE
+         ORDER BY mb.first_name, mb.surname`,
+        [group.id]
+      );
+      group.members = membersRes.rows;
+      group.members_preview = membersRes.rows.slice(0, 6);
+
+      // Fetch upcoming meetings from weekly_reports
+      const meetingsRes = await db.query(
+        `SELECT id, meeting_date, topic, next_meeting_date
+         FROM weekly_reports
+         WHERE cell_group_id = $1 AND meeting_date >= CURRENT_DATE
+         ORDER BY meeting_date ASC
+         LIMIT 5`,
+        [group.id]
+      );
+      group.upcoming_meetings = meetingsRes.rows;
+
+      result.push(group);
+    }
+
+    return res.json(result);
   } catch (err) {
     console.error('getMyCellGroups error', err);
     return res.status(500).json({ error: err.message || 'Failed to fetch my cell groups' });
   }
 };
+// --- Get last attendance summary for a cell group ---
+export async function getLastAttendance(req, res) {
+  try {
+    const cellId = parseInt(req.params.id);
+    if (!cellId) return res.status(400).json({ error: 'cell_id required' });
+
+    const result = await db.query(
+      `SELECT 
+          COUNT(*) FILTER (WHERE a.present) AS present_count,
+          COUNT(*) FILTER (WHERE NOT a.present) AS absent_count,
+          COUNT(DISTINCT v.id) AS visitor_count
+       FROM attendance a
+       LEFT JOIN visitors v 
+         ON v.cell_group_id = a.cell_group_id 
+        AND v.meeting_date = a.meeting_date
+       WHERE a.cell_group_id = $1
+       GROUP BY a.cell_group_id
+       ORDER BY MAX(a.meeting_date) DESC
+       LIMIT 1`,
+      [cellId]
+    );
+
+    if (!result.rows.length) return res.json({});
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('getLastAttendance error', err);
+    res.status(500).json({ error: err.message || 'Failed to get last attendance' });
+  }
+}
