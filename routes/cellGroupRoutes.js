@@ -3,6 +3,7 @@ import express from 'express';
 import { authenticateToken } from '../middleware/authMiddleware.js';
 import { requirePermission } from '../middleware/rbacMiddleware.js';
 import * as ctrl from '../controllers/cellGroupController.js';
+import { getLastAttendance } from '../controllers/cellGroupController.js';
 
 const router = express.Router();
 
@@ -25,5 +26,6 @@ router.post('/members', authenticateToken, requirePermission('manage_cell_member
 router.post('/members/bulk', authenticateToken, requirePermission('manage_cell_members'), ctrl.bulkAddCellMembersCtrl);
 router.delete('/members', authenticateToken, requirePermission('manage_cell_members'), ctrl.removeCellMemberCtrl);
 router.put('/members/role', authenticateToken, requirePermission('manage_cell_members'), ctrl.changeCellMemberRoleCtrl);
+router.get('/:id/attendance/last', getLastAttendance);
 
 export default router;
