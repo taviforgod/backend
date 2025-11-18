@@ -193,7 +193,7 @@ export const deleteMember = async (id, church_id) => {
 // Export members as CSV
 export const exportMembersCSV = async (church_id) => {
   const res = await db.query(
-    `SELECT member_no, first_name, surname, email, contact_primary AS phone, gender_id, member_status_id, member_type_id
+    `SELECT id, first_name, surname, email, contact_primary AS phone, gender_id, member_status_id, member_type_id
      FROM members WHERE church_id = $1 ORDER BY first_name, surname`, [church_id]);
   const parser = new CsvParser();
   return parser.parse(res.rows);
@@ -215,13 +215,12 @@ export const checkDuplicateField = async (field, value, church_id) => {
 export const searchMembers = async ({ q, church_id }) => {
   if (!q || !church_id) return [];
   const res = await db.query(
-    `SELECT id, member_no, first_name, surname, email, contact_primary AS phone
+    `SELECT id,  first_name, surname, email, contact_primary AS phone
      FROM members
      WHERE church_id = $1
        AND (
          LOWER(first_name) LIKE LOWER($2) OR
          LOWER(surname) LIKE LOWER($2) OR
-         CAST(member_no AS TEXT) LIKE $2 OR
          contact_primary LIKE $2
        )
      ORDER BY first_name, surname
@@ -255,4 +254,44 @@ export const getMembersByUserRole = async (role, church_id) => {
     [role, church_id]
   );
   return res.rows;
+};
+
+// Sync member contact info to user record
+export const syncMemberContactToUser = async (memberId, church_id) => {
+  try {
+    const member = await db.query(
+      `SELECT user_id, email, contact_primary FROM members WHERE id = $1 AND church_id = $2`,
+      [memberId, church_id]
+    );
+    
+    if (!member.rows[0] || !member.rows[0].user_id) return null;
+    
+    const m = member.rows[0];
+    const updates = {};
+    
+    if (m.email) updates.email = m.email;
+    if (m.contact_primary) updates.phone = m.contact_primary;
+    
+    if (Object.keys(updates).length === 0) return null;
+    
+    // Update users table
+    const fields = Object.keys(updates);
+    const setClause = fields.map((key, idx) => {
+      const userKey = key === 'contact_primary' ? 'phone' : key;
+      return `${userKey}=$${idx + 1}`;
+    }).join(', ');
+    
+    const values = fields.map(key => updates[key]);
+    values.push(m.user_id);
+    
+    const res = await db.query(
+      `UPDATE users SET ${setClause}, updated_at=now() WHERE id=$${values.length} RETURNING *`,
+      values
+    );
+    
+    return res.rows[0];
+  } catch (err) {
+    console.error('Sync error:', err);
+    throw err;
+  }
 };
