@@ -20,7 +20,7 @@ import notificationTemplateRoutes from "./routes/notificationTemplateRoutes.js";
 import notificationPreferenceRoutes from "./routes/notificationPreferenceRoutes.js";
 import messageBoardRoutes from "./routes/messageBoardRoutes.js";
 
-
+import foundationClassesRouter from './routes/foundationClasses.js';
 import foundationRouter from './routes/foundation.js';
 import mentorshipRouter from './routes/mentorship.js';
 import prayerRoutes from './routes/prayerRoutes.js';
@@ -65,6 +65,7 @@ app.use('/api/lookups', lookupRoutes);
 app.use('/api/milestone-records', milestoneRecordRoutes);
 app.use('/api/milestone-templates', milestoneTemplateRoutes);
 app.use('/api/cell-groups', cellModuleRoutes);
+app.use('/api/foundation/classes', foundationClassesRouter);
 app.use('/api/foundation', foundationRouter);
 app.use('/api/mentorship', mentorshipRouter);
 app.use('/api/prayer', prayerRoutes);
