@@ -1,253 +1,121 @@
 import db from '../config/db.js';
 
-// Helper to generate request number
-const generateRequestNo = () => `PR-${Date.now().toString().slice(-6)}-${Math.floor(Math.random()*900 + 100)}`;
-
-// Insert prayer request
-export const createPrayerRequest = async (data) => {
-  const {
-    member_id = null,
-    church_id,
-    created_by = null,
-    category = 'prayer',
-    sub_category = null,
-    urgency = 'normal',
-    preferred_contact_method = null,
-    contact_details = null,
-    description = null,
-    confidentiality = true
-  } = data;
-
-  const request_no = generateRequestNo();
-
-  const res = await db.query(
-    `INSERT INTO prayer_requests (
-      request_no, member_id, church_id, created_by, category, sub_category,
-      urgency, preferred_contact_method, contact_details, description, confidentiality, created_at, updated_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now()) RETURNING *`,
-    [request_no, member_id, church_id, created_by, category, sub_category, urgency, preferred_contact_method, contact_details, description, confidentiality]
-  );
-  return res.rows[0];
-};
-
-export const getPrayerRequests = async ({ church_id, limit = 100, offset = 0, filters = {} }) => {
-  const vals = [church_id];
-  let where = `WHERE pr.church_id = $1`;
-
-  if (filters.status) {
-    vals.push(filters.status);
-    where += ` AND pr.status = $${vals.length}`;
-  }
-  if (filters.urgency) {
-    vals.push(filters.urgency);
-    where += ` AND pr.urgency = $${vals.length}`;
-  }
-  if (filters.assigned_to) {
-    vals.push(filters.assigned_to);
-    where += ` AND pr.assigned_to = $${vals.length}`;
-  }
-  if (filters.q) {
-    vals.push(`%${filters.q}%`);
-    where += ` AND (LOWER(pr.request_no) LIKE LOWER($${vals.length}) OR LOWER(pr.description) LIKE LOWER($${vals.length}))`;
-  }
-
-  vals.push(limit, offset);
-
-  const res = await db.query(
-    `SELECT pr.*,
-            m.first_name, m.surname, m.email AS member_email,
-            CASE WHEN pr.confidentiality = FALSE THEN m.contact_primary ELSE NULL END AS member_phone,
-            am.first_name AS assigned_first_name, am.surname AS assigned_surname, am.email AS assigned_email
-     FROM prayer_requests pr
-     LEFT JOIN members m ON pr.member_id = m.id
-     LEFT JOIN members am ON pr.assigned_to = am.id
-     ${where}
-     ORDER BY pr.created_at DESC
-     LIMIT $${vals.length-1} OFFSET $${vals.length}`,
-    vals
-  );
-  return res.rows;
-};
-
-export const getPrayerById = async (id, church_id) => {
-  const res = await db.query(
-    `SELECT pr.*,
-            m.first_name, m.surname, m.email AS member_email,
-            CASE WHEN pr.confidentiality = FALSE THEN m.contact_primary ELSE NULL END AS member_phone,
-            am.first_name AS assigned_first_name, am.surname AS assigned_surname, am.email AS assigned_email
-     FROM prayer_requests pr
-     LEFT JOIN members m ON pr.member_id = m.id
-     LEFT JOIN members am ON pr.assigned_to = am.id
-     WHERE pr.id = $1 AND pr.church_id = $2`,
-    [id, church_id]
-  );
-  if (!res.rows[0]) return null;
-
-  const followups = await db.query(
-    `SELECT f.*,
-            m.first_name AS contacted_by_first_name,
-            m.surname AS contacted_by_surname
-     FROM prayer_followups f
-     LEFT JOIN users u ON f.contacted_by = u.id
-     LEFT JOIN members m
-       ON m.user_id = u.id
-       OR (LOWER(m.email) = LOWER(u.email))
-       OR (m.contact_primary = u.phone)
-     WHERE f.prayer_request_id = $1
-     ORDER BY f.contacted_at DESC`,
-    [id]
-  );
-
-  const audits = await db.query(
-    `SELECT a.id, a.action, a.details, a.performed_by,
-            m.first_name AS performed_by_first_name,
-            m.surname AS performed_by_surname,
-            a.performed_at
-     FROM prayer_audit_logs a
-     LEFT JOIN users u ON a.performed_by = u.id
-     LEFT JOIN members m
-       ON m.user_id = u.id
-       OR (LOWER(m.email) = LOWER(u.email))
-       OR (m.contact_primary = u.phone)
-     WHERE a.prayer_request_id = $1
-     ORDER BY a.performed_at DESC`,
-    [id]
-  );
-
-  const row = res.rows[0];
-  row.followups = followups.rows;
-  row.audit = audits.rows;
-  return row;
-};
-
-export const updatePrayerRequest = async (id, church_id, updates) => {
-  const allowed = ['category','sub_category','urgency','preferred_contact_method','contact_details','description','confidentiality','status','outcome','resolution_notes','assigned_to','last_contacted_at'];
-  const fields = Object.keys(updates).filter(k => allowed.includes(k));
-  if (fields.length === 0) throw new Error('No valid fields to update');
-
-  const vals = [];
-  const set = fields.map((k, idx) => {
-    vals.push(updates[k]);
-    return `${k} = $${idx + 1}`;
-  }).join(', ');
-
-  vals.push(id, church_id);
-  const query = `UPDATE prayer_requests SET ${set}, updated_at = now() WHERE id = $${vals.length-1} AND church_id = $${vals.length} RETURNING *`;
-  const res = await db.query(query, vals);
-  return res.rows[0];
-};
-
-export const memberExistsInChurch = async (member_id, church_id) => {
-  if (!member_id) return false;
-  const res = await db.query(
-    `SELECT 1 FROM members WHERE id = $1 AND church_id = $2 LIMIT 1`,
-    [member_id, church_id]
-  );
+/* leadership validation */
+export async function isActiveLeader(churchId, memberId) {
+  const q = `
+    SELECT 1 FROM leadership_roles lr
+    WHERE lr.church_id = $1
+      AND lr.member_id = $2
+      AND lr.active = TRUE
+      AND NOT EXISTS (
+        SELECT 1 FROM leadership_alerts la
+        WHERE la.church_id = $1
+          AND la.leader_id = $2
+          AND la.resolved = FALSE
+          AND la.type IN ('burnout','inactivity')
+      )
+    LIMIT 1;
+  `;
+  const res = await db.query(q, [churchId, memberId]);
   return res.rowCount > 0;
-};
+}
 
-export const insertPrayerAudit = async (prayer_request_id, action, details = null, performed_by = null) => {
-  const res = await db.query(
-    `INSERT INTO prayer_audit_logs (prayer_request_id, action, details, performed_by, performed_at)
-     VALUES ($1, $2, $3, $4, now()) RETURNING *`,
-    [prayer_request_id, action, details ? JSON.stringify(details) : null, performed_by]
-  );
-  return res.rows[0];
-};
+export async function createPrayerRequest(data) {
+  const {
+    church_id, created_by_member_id, category, sub_category, urgency,
+    preferred_contact_method, contact_details, description, confidential, metadata
+  } = data;
+  const q = `
+    INSERT INTO prayer_requests
+      (church_id, created_by_member_id, category, sub_category, urgency, preferred_contact_method,
+       contact_details, description, confidential, metadata, status, created_at, updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'open', now(), now())
+    RETURNING *;
+  `;
+  const vals = [
+    church_id, created_by_member_id, category, sub_category, urgency || 'normal',
+    preferred_contact_method, contact_details || {}, description || '', !!confidential, metadata || {}
+  ];
+  const { rows } = await db.query(q, vals);
+  const prayer = rows[0];
+  await addAudit(prayer.id, 'created', { by: created_by_member_id });
 
-export const assignPrayerRequest = async (id, church_id, assigned_to, assigned_by = null) => {
-  const memberOk = await memberExistsInChurch(assigned_to, church_id);
-  if (!memberOk) {
-    const err = new Error('Assignee is not a valid member of this church');
-    err.code = 'INVALID_MEMBER';
+  return prayer;
+}
+
+export async function getPrayerById(id, churchId) {
+  const q = `
+    SELECT pr.*, m.first_name, m.surname,
+      a.first_name AS assigned_first_name, a.surname AS assigned_surname
+    FROM prayer_requests pr
+    LEFT JOIN members m ON pr.created_by_member_id = m.id
+    LEFT JOIN members a ON pr.assigned_to = a.id
+    WHERE pr.id = $1 AND pr.church_id = $2
+  `;
+  const { rows } = await db.query(q, [id, churchId]);
+  if (!rows[0]) return null;
+  const pr = rows[0];
+  const f = await db.query('SELECT pf.*, m.first_name, m.surname FROM prayer_followups pf LEFT JOIN members m ON m.id = pf.created_by_member_id WHERE pf.prayer_id=$1 ORDER BY pf.created_at ASC', [pr.id]);
+  const a = await db.query('SELECT pa.*, m.first_name AS performed_by_first, m.surname AS performed_by_surname FROM prayer_audits pa LEFT JOIN members m ON m.id = pa.performed_by_member_id WHERE pa.prayer_id=$1 ORDER BY pa.created_at ASC', [pr.id]);
+  pr.followups = f.rows || [];
+  pr.audit = a.rows || [];
+  return pr;
+}
+
+export async function getPrayers(churchId, limit = 50, offset = 0) {
+  const q = `
+    SELECT pr.*, m.first_name, m.surname,
+      a.first_name AS assigned_first_name, a.surname AS assigned_surname
+    FROM prayer_requests pr
+    LEFT JOIN members m ON pr.created_by_member_id = m.id
+    LEFT JOIN members a ON pr.assigned_to = a.id
+    WHERE pr.church_id = $1
+    ORDER BY pr.created_at DESC
+    LIMIT $2 OFFSET $3
+  `;
+  const { rows } = await db.query(q, [churchId, limit, offset]);
+  return rows;
+}
+
+export async function getUrgentCount(churchId) {
+  const q = `
+    SELECT COUNT(*) FILTER (WHERE urgency='urgent' AND status IN ('open','in_progress'))::int AS urgent_open
+    FROM prayer_requests
+    WHERE church_id = $1;
+  `;
+  const { rows } = await db.query(q, [churchId]);
+  return rows[0] || { urgent_open: 0 };
+}
+
+export async function assignPrayer(churchId, prayerId, assignedTo, actorId) {
+  const ok = await isActiveLeader(churchId, assignedTo);
+  if (!ok) {
+    const err = new Error('Assignee must be an active leader (not flagged with burnout/inactivity).');
+    err.status = 403;
     throw err;
   }
+  const q = `UPDATE prayer_requests SET assigned_to = $1, status = 'in_progress', updated_at = now() WHERE id = $2 AND church_id = $3 RETURNING *`;
+  const { rows } = await db.query(q, [assignedTo, prayerId, churchId]);
+  const prayer = rows[0];
+  await addAudit(prayerId, 'assigned', { to: assignedTo, by: actorId });
+  return prayer;
+}
 
-  const res = await db.query(
-    `UPDATE prayer_requests
-     SET assigned_to = $1, status = 'in_progress', updated_at = now()
-     WHERE id = $2 AND church_id = $3
-     RETURNING *`,
-    [assigned_to, id, church_id]
-  );
-  const updated = res.rows[0];
+export async function addFollowup(churchId, prayerId, memberId, note, method) {
+  const q = `INSERT INTO prayer_followups (church_id, prayer_id, created_by_member_id, note, method) VALUES ($1,$2,$3,$4,$5) RETURNING *`;
+  const { rows } = await db.query(q, [churchId, prayerId, memberId, note, method || 'phone']);
+  await addAudit(prayerId, 'followup_added', { note, by: memberId });
+  return rows[0];
+}
 
-  try {
-    await insertPrayerAudit(id, 'assigned', { assigned_to }, assigned_by);
-  } catch (e) {
-    console.error('Failed to insert audit record for assignment', e);
-  }
+export async function closePrayer(churchId, prayerId, memberId, outcome, notes) {
+  const q = `UPDATE prayer_requests SET status = 'closed', closed_at = now(), updated_at = now() WHERE id = $1 AND church_id = $2 RETURNING *`;
+  const { rows } = await db.query(q, [prayerId, churchId]);
+  await addAudit(prayerId, 'closed', { outcome, notes, by: memberId });
+  return rows[0];
+}
 
-  return updated;
-};
-
-export const addFollowUp = async (prayer_request_id, note, contacted_by = null, method = null, contacted_at = null) => {
-  const res = await db.query(
-    `INSERT INTO prayer_followups (prayer_request_id, note, contacted_by, method, contacted_at, created_at)
-     VALUES ($1,$2,$3,$4, COALESCE($5, now()), now()) RETURNING *`,
-    [prayer_request_id, note, contacted_by, method, contacted_at]
-  );
-
-  await db.query(`UPDATE prayer_requests SET last_contacted_at = COALESCE($1, now()), updated_at = now() WHERE id = $2`, [contacted_at || new Date(), prayer_request_id]);
-
-  try {
-    await insertPrayerAudit(prayer_request_id, 'followup_added', { note, method, contacted_at }, contacted_by);
-  } catch (e) {
-    console.error('Failed to insert audit for followup', e);
-  }
-
-  return res.rows[0];
-};
-
-export const closePrayerRequest = async (id, church_id, outcome = null, resolution_notes = null, closed_by = null) => {
-  const res = await db.query(
-    `UPDATE prayer_requests
-     SET status = 'closed', outcome = $1, resolution_notes = $2, updated_at = now()
-     WHERE id = $3 AND church_id = $4
-     RETURNING *`,
-    [outcome, resolution_notes, id, church_id]
-  );
-  const updated = res.rows[0];
-
-  try {
-    await insertPrayerAudit(id, 'closed', { outcome, resolution_notes }, closed_by);
-  } catch (e) {
-    console.error('Failed to insert audit record for close', e);
-  }
-
-  return updated;
-};
-
-export const countUrgentOpen = async (church_id) => {
-  const res = await db.query(
-    `SELECT COUNT(*)::int AS urgent_open FROM prayer_requests WHERE church_id = $1 AND urgency = 'urgent' AND status != 'closed'`,
-    [church_id]
-  );
-  return res.rows[0].urgent_open;
-};
-
-export const avgTimeToFirstContactSeconds = async (church_id) => {
-  const res = await db.query(`
-    SELECT AVG(EXTRACT(EPOCH FROM (first_contacted - pr.created_at))) AS avg_seconds
-    FROM (
-      SELECT pr.id, pr.created_at,
-        (SELECT MIN(contacted_at) FROM prayer_followups pf WHERE pf.prayer_request_id = pr.id) AS first_contacted
-      FROM prayer_requests pr
-      WHERE pr.church_id = $1
-    ) t
-    JOIN prayer_requests pr ON pr.id = t.id
-    WHERE t.first_contacted IS NOT NULL
-  `, [church_id]);
-  return res.rows[0].avg_seconds || 0;
-};
-
-export const trendByCategory = async (church_id, days = 90) => {
-  const res = await db.query(
-    `SELECT category, COUNT(*)::int AS cnt
-     FROM prayer_requests
-     WHERE church_id = $1 AND created_at >= now() - ($2::int || ' days')::interval
-     GROUP BY category ORDER BY cnt DESC`,
-    [church_id, days]
-  );
-  return res.rows;
-};
+export async function addAudit(prayerId, action, payload) {
+  const q = `INSERT INTO prayer_audits (prayer_id, action, payload, performed_by_member_id, created_at) VALUES ($1,$2,$3,$4, now()) RETURNING *`;
+  await db.query(q, [prayerId, action, payload, payload && payload.by ? payload.by : null]);
+}
