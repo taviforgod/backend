@@ -5,7 +5,7 @@ import compression from 'compression';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
 import fs from 'fs';
-import morgan from 'morgan'; 
+import morgan from 'morgan';
 
 // Routes
 import authRoutes from './routes/authRoutes.js';
@@ -43,117 +43,135 @@ import crisisFollowupRoutes from './routes/crisisFollowupRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';
 import spiritualGrowthRoutes from './routes/spiritualGrowthRoutes.js';
 
-
 const app = express();
 
-// ================================================
-// 🛡️ Security & Core Middleware
-// ================================================
+// ==============================================================
+// 🛡 SECURITY SETTINGS
+// ==============================================================
 
-if (process.env.NODE_ENV === 'production') {
-  app.set('trust proxy', 1); // trust Render proxy headers
-}
-
-app.use(helmet({
-  crossOriginResourcePolicy: false,
-}));
-
-app.use(compression());
-
-// ================================================
-// 🧾 Logging Middleware
-// ================================================
-
-// Custom Morgan format for Render-friendly logs
-morgan.token('body', (req) => {
-  if (req.method !== 'GET' && req.body && Object.keys(req.body).length > 0) {
-    return JSON.stringify(req.body);
-  }
-  return '';
-});
-
-// Log to console (and keep it clean for Render)
-app.use(morgan(':method :url :status - :response-time ms :body', {
-  skip: (req, res) => req.url === '/api/_health', // skip health checks
-}));
-
-// ================================================
-// 🌐 CORS & Rate Limiting
-// ================================================
-app.use(cors({
-  origin: process.env.FRONTEND_ORIGIN || 'http://localhost:3000',
-  credentials: true,
-}));
-
-const globalLimiter = rateLimit({
-  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 60 * 1000,
-  max: Number(process.env.RATE_LIMIT_MAX) || 200,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use(globalLimiter);
-
-// ================================================
-// 🖼️ Static Files
-// ================================================
-
-const uploadsDir = path.join(process.cwd(), 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+if (process.env.NODE_ENV === "production") {
+    app.set("trust proxy", 1); // Render reverse proxy
 }
 
 app.use(
-  '/uploads',
-  express.static(uploadsDir, {
-    maxAge: '7d',
-    etag: true,
-  })
+    helmet({
+        crossOriginResourcePolicy: false,
+    })
 );
 
-// ================================================
-// ⚙️ Request Parsing
-// ================================================
+app.use(compression());
 
-// parse JSON + urlencoded bodies BEFORE routes so req.body is populated
-app.use(express.json({ limit: '5mb' }));
-app.use(express.urlencoded({ extended: true }));
+// ==============================================================
+// 🧾 LOGGING
+// ==============================================================
 
-// optional debug to confirm bodies arrive
-app.use((req, res, next) => {
-  console.debug('HTTP', req.method, req.url, 'bodyKeys=', Object.keys(req.body || {}));
-  next();
+morgan.token("body", (req) => {
+    if (req.method !== "GET" && req.body && Object.keys(req.body).length > 0) {
+        return JSON.stringify(req.body);
+    }
+    return "";
 });
 
-// ================================================
+app.use(
+    morgan(":method :url :status - :response-time ms :body", {
+        skip: (req) => req.url === "/api/_health",
+    })
+);
+
+// ==============================================================
+// 🌐 CORS CONFIG (Render Ready)
+// ==============================================================
+
+const allowedOrigins = [
+    "http://localhost:3000",
+    "https://frontend-jvvi.onrender.com",
+];
+
+app.use(
+    cors({
+        origin: (origin, callback) => {
+            if (!origin || allowedOrigins.includes(origin)) {
+                return callback(null, true);
+            }
+            return callback(new Error("CORS Not Allowed"), false);
+        },
+        credentials: true,
+    })
+);
+
+// ==============================================================
+// 🚦 RATE LIMITING
+// ==============================================================
+
+const globalLimiter = rateLimit({
+    windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_MAX) || 200,
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+app.use(globalLimiter);
+
+// ==============================================================
+// 📁 STATIC FILES (Uploads)
+// ==============================================================
+
+const uploadsDir = path.join(process.cwd(), "uploads");
+
+if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+app.use(
+    "/uploads",
+    express.static(uploadsDir, {
+        maxAge: "7d",
+        etag: true,
+    })
+);
+
+// ==============================================================
+// 📦 BODY PARSING
+// ==============================================================
+
+app.use(express.json({ limit: "5mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+app.use((req, res, next) => {
+    console.debug("HTTP", req.method, req.url, "bodyKeys=", Object.keys(req.body || {}));
+    next();
+});
+
+// ==============================================================
 // 🔗 ROUTES
-// ================================================
+// ==============================================================
 
-app.use('/api/auth', authRoutes);
-app.use('/api/members', memberRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/roles', roleRoutes);
-app.use('/api/permissions', permissionRoutes);
-app.use('/api/lookups', lookupRoutes);
-app.use('/api/milestone-records', milestoneRecordRoutes);
-app.use('/api/milestone-templates', milestoneTemplateRoutes);
-app.use('/api/cell-groups', cellModuleRoutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/members", memberRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/roles", roleRoutes);
+app.use("/api/permissions", permissionRoutes);
+app.use("/api/lookups", lookupRoutes);
+app.use("/api/milestone-records", milestoneRecordRoutes);
+app.use("/api/milestone-templates", milestoneTemplateRoutes);
+app.use("/api/cell-groups", cellModuleRoutes);
 
-app.use('/api/foundation/classes', foundationClassesRouter);
-app.use('/api/foundation', foundationRouter);
-app.use('/api/mentorship', mentorshipRouter);
-app.use('/api/prayer', prayerRoutes);
-app.use('/api/leadership', leadershipRoutes);
+app.use("/api/foundation/classes", foundationClassesRouter);
+app.use("/api/foundation", foundationRouter);
+app.use("/api/mentorship", mentorshipRouter);
+app.use("/api/prayer", prayerRoutes);
+app.use("/api/leadership", leadershipRoutes);
 
-app.use('/api/evangelism', evangelismRoutes);
-app.use('/api/evangelism/events', evangelismEventRoutes);
-app.use('/api/evangelism/import', evangelismImportRoutes);
-app.use('/api/attendance', attendanceRoutes);
+app.use("/api/evangelism", evangelismRoutes);
+app.use("/api/evangelism/events", evangelismEventRoutes);
+app.use("/api/evangelism/import", evangelismImportRoutes);
+app.use("/api/attendance", attendanceRoutes);
 
-app.use('/api/exit-interviews', exitInterviewRoutes);
-app.use('/api/exits', inactiveExitRoutes);
-app.use('/api/export', exportRoutes);
-app.use('/api/visitors', visitorRoutes);
-app.use('/api/weekly-reports', weeklyReportsRoutes);
+app.use("/api/exit-interviews", exitInterviewRoutes);
+app.use("/api/exits", inactiveExitRoutes);
+app.use("/api/export", exportRoutes);
+app.use("/api/visitors", visitorRoutes);
+app.use("/api/weekly-reports", weeklyReportsRoutes);
 
 app.use("/api/notifications", notificationRateLimiter, notificationRoutes);
 app.use("/api/notification-logs", notificationLogRoutes);
@@ -161,30 +179,35 @@ app.use("/api/notification-jobs", notificationJobRoutes);
 app.use("/api/notification-templates", notificationTemplateRoutes);
 app.use("/api/notification-preferences", notificationPreferenceRoutes);
 app.use("/api/message-board", messageBoardRoutes);
-app.use('/api/crisis-followups', crisisFollowupRoutes);
-app.use('/api/analytics', analyticsRoutes);
-app.use('/api/spiritual_growth', spiritualGrowthRoutes);
+app.use("/api/crisis-followups", crisisFollowupRoutes);
+app.use("/api/analytics", analyticsRoutes);
+app.use("/api/spiritual_growth", spiritualGrowthRoutes);
 
+// ==============================================================
+// ❤️ HEALTH CHECK FOR RENDER
+// ==============================================================
 
-// ================================================
-// ❤️ Health Check
-// ================================================
-app.get('/api/_health', (req, res) => res.json({ ok: true }));
+app.get("/api/_health", (req, res) => res.json({ ok: true }));
 
-// ================================================
-// 🧩 Error Handling Middleware
-// ================================================
+// ==============================================================
+// ❌ 404 HANDLER
+// ==============================================================
 
 app.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint not found' });
+    res.status(404).json({ error: "Endpoint not found" });
 });
 
+// ==============================================================
+// 💥 ERROR HANDLER
+// ==============================================================
+
 app.use((err, req, res, next) => {
-  console.error('💥 Server Error:', err);
-  if (res.headersSent) return next(err);
-  res.status(err.status || 500).json({
-    error: err.message || 'Internal Server Error',
-  });
+    console.error("💥 Server Error:", err);
+    if (res.headersSent) return next(err);
+
+    res.status(err.status || 500).json({
+        error: err.message || "Internal Server Error",
+    });
 });
 
 export default app;
