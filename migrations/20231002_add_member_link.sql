@@ -1,1 +1,0 @@
-ALTER TABLE visitors ADD COLUMN IF NOT EXISTS member_id INT REFERENCES members(id);
