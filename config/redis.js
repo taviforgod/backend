@@ -1,16 +1,12 @@
-// backend/config/redis.js
+// config/redis.js
 import Redis from 'ioredis';
 
-const redisUrl = process.env.REDIS_URL;
+const redisClient = new Redis(process.env.REDIS_URL, { tls: {} });
 
-if (!redisUrl) {
-  throw new Error('REDIS_URL is not defined!');
+redisClient.on('connect', () => console.log('✅ Redis connected'));
+redisClient.on('error', (err) => console.error('Redis error', err));
+
+export function getRedisClient() {
+  return redisClient;
 }
 
-export const redis = new Redis(redisUrl, {
-  tls: {},               // Required for Upstash rediss://
-  maxRetriesPerRequest: 5 // Optional: reduce long retry loops
-});
-
-redis.on('connect', () => console.log('✅ Redis connected'));
-redis.on('error', (err) => console.error('Redis error', err));
