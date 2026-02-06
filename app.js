@@ -5,7 +5,7 @@ import compression from 'compression';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
 import fs from 'fs';
-import morgan from 'morgan';
+import morgan from 'morgan'; 
 
 // Routes
 import authRoutes from './routes/authRoutes.js';
@@ -64,109 +64,94 @@ import communicationProviderRoutes from './routes/communicationProviderRoutes.js
 import automatedReminderRoutes from './routes/automatedReminderRoutes.js';
 import cellVisitorRoutes from './routes/newBelieverRoutes.js';
 import absenteeFollowupRoutes from './routes/absenteeFollowupRoutes.js';
+import zoneRoutes from './routes/zoneRoutes.js';
+
+// Start notification worker for automated reminders
+import './workers/notificationWorker.js';
 
 const app = express();
 
-// ==============================================================
-// 🛡 SECURITY SETTINGS
-// ==============================================================
+// ================================================
+// 🛡️ Security & Core Middleware
+// ================================================
 
-if (process.env.NODE_ENV === "production") {
-    app.set("trust proxy", 1); // Render reverse proxy
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1); // trust Render proxy headers
 }
 
-app.use(
-    helmet({
-        crossOriginResourcePolicy: false,
-    })
-);
+app.use(helmet({
+  crossOriginResourcePolicy: false,
+}));
 
 app.use(compression());
 
-// ==============================================================
-// 🧾 LOGGING
-// ==============================================================
+// ================================================
+// 🧾 Logging Middleware
+// ================================================
 
-morgan.token("body", (req) => {
-    if (req.method !== "GET" && req.body && Object.keys(req.body).length > 0) {
-        return JSON.stringify(req.body);
-    }
-    return "";
+// Custom Morgan format for Render-friendly logs
+morgan.token('body', (req) => {
+  if (req.method !== 'GET' && req.body && Object.keys(req.body).length > 0) {
+    return JSON.stringify(req.body);
+  }
+  return '';
 });
 
-app.use(
-    morgan(":method :url :status - :response-time ms :body", {
-        skip: (req) => req.url === "/api/_health",
-    })
-);
+// Log to console (and keep it clean for Render)
+app.use(morgan(':method :url :status - :response-time ms :body', {
+  skip: (req, res) => req.url === '/api/_health', // skip health checks
+}));
 
-// ==============================================================
-// 🌐 CORS CONFIG (Render Ready)
-// ==============================================================
-
-const allowedOrigins = [
-    "http://localhost:3000",
-    "https://frontend-jvvi.onrender.com",
-];
-
-app.use(
-    cors({
-        origin: (origin, callback) => {
-            if (!origin || allowedOrigins.includes(origin)) {
-                return callback(null, true);
-            }
-            return callback(new Error("CORS Not Allowed"), false);
-        },
-        credentials: true,
-    })
-);
-
-// ==============================================================
-// 🚦 RATE LIMITING
-// ==============================================================
+// ================================================
+// 🌐 CORS & Rate Limiting
+// ================================================
+app.use(cors({
+  origin: process.env.FRONTEND_ORIGIN || 'http://localhost:3000',
+  credentials: true,
+}));
 
 const globalLimiter = rateLimit({
-    windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 60 * 1000,
-    max: Number(process.env.RATE_LIMIT_MAX) || 200,
-    standardHeaders: true,
-    legacyHeaders: false,
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_MAX) || 200,
+  standardHeaders: true,
+  legacyHeaders: false,
 });
-
 app.use(globalLimiter);
 
-// ==============================================================
-// 📁 STATIC FILES (Uploads)
-// ==============================================================
+// ================================================
+// 🖼️ Static Files
+// ================================================
 
-const uploadsDir = path.join(process.cwd(), "uploads");
-
+const uploadsDir = path.join(process.cwd(), 'uploads');
 if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
+  fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
 app.use(
-    "/uploads",
-    express.static(uploadsDir, {
-        maxAge: "7d",
-        etag: true,
-    })
+  '/uploads',
+  express.static(uploadsDir, {
+    maxAge: '7d',
+    etag: true,
+  })
 );
 
-// ==============================================================
-// 📦 BODY PARSING
-// ==============================================================
+// ================================================
+// ⚙️ Request Parsing
+// ================================================
 
-app.use(express.json({ limit: "5mb" }));
+// parse JSON + urlencoded bodies BEFORE routes so req.body is populated
+app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// optional debug to confirm bodies arrive
 app.use((req, res, next) => {
-    console.debug("HTTP", req.method, req.url, "bodyKeys=", Object.keys(req.body || {}));
-    next();
+  console.debug('HTTP', req.method, req.url, 'bodyKeys=', Object.keys(req.body || {}));
+  next();
 });
 
-// ==============================================================
+// ================================================
 // 🔗 ROUTES
-// ==============================================================
+// ================================================
 
 app.use('/api/auth', authRoutes);
 app.use('/api/members', memberRoutes);
@@ -224,36 +209,31 @@ app.use("/api/communication-providers", communicationProviderRoutes);
 app.use("/api/automated-reminders", automatedReminderRoutes);
 app.use("/api/absentee-followups", absenteeFollowupRoutes);
 app.use("/api/message-board", messageBoardRoutes);
+app.use("/api/zones", zoneRoutes);
 app.use('/api/crisis-followups', crisisFollowupRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/spiritual_growth', spiritualGrowthRoutes);
 
 
-// ==============================================================
-// ❤️ HEALTH CHECK FOR RENDER
-// ==============================================================
+// ================================================
+// ❤️ Health Check
+// ================================================
+app.get('/api/_health', (req, res) => res.json({ ok: true }));
 
-app.get("/api/_health", (req, res) => res.json({ ok: true }));
-
-// ==============================================================
-// ❌ 404 HANDLER
-// ==============================================================
+// ================================================
+// 🧩 Error Handling Middleware
+// ================================================
 
 app.use((req, res) => {
-    res.status(404).json({ error: "Endpoint not found" });
+  res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// ==============================================================
-// 💥 ERROR HANDLER
-// ==============================================================
-
 app.use((err, req, res, next) => {
-    console.error("💥 Server Error:", err);
-    if (res.headersSent) return next(err);
-
-    res.status(err.status || 500).json({
-        error: err.message || "Internal Server Error",
-    });
+  console.error('💥 Server Error:', err);
+  if (res.headersSent) return next(err);
+  res.status(err.status || 500).json({
+    error: err.message || 'Internal Server Error',
+  });
 });
 
 export default app;
