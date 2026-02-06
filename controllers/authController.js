@@ -12,7 +12,6 @@ import {
   updatePassword
 } from '../models/userModel.js';
 import { sendOTP, verifyOTP } from '../utils/otpUtils.js';
-import { getUserZones } from '../utils/zoneUtils.js';
 
 // --- Secrets ---
 const jwtSecret = process.env.JWT_SECRET ?? 'supersecret';
@@ -175,18 +174,11 @@ export const login = async (req, res) => {
     if (!match) return res.status(401).json({ message: 'Invalid credentials' });
 
     const role = await getUserRole(user.id);
-    const zones = await getUserZones(user.id, user.church_id);
-    
     const accessToken = createAccessToken(user.id, user.church_id);
     const refreshToken = generateRefreshToken();
     saveRefreshToken(refreshToken, user.id);
 
-    const userResponse = formatUserResponse(user, role);
-    if (zones.length > 0) {
-      userResponse.zones = zones;
-    }
-
-    return res.json({ user: userResponse, accessToken, refreshToken, expiresIn: ACCESS_EXPIRES });
+    return res.json({ user: formatUserResponse(user, role), accessToken, refreshToken, expiresIn: ACCESS_EXPIRES });
   } catch (err) {
     console.error('Login error:', err);
     return res.status(500).json({ message: 'Login failed' });
@@ -206,17 +198,11 @@ export const refresh = async (req, res) => {
     const user = await getUserById(entry.userId);
     if (!user) return res.status(401).json({ message: 'User not found' });
 
-    const zones = await getUserZones(user.id, user.church_id);
     const newRefreshToken = rotateRefreshToken(refreshToken, user.id);
     const accessToken = createAccessToken(user.id, user.church_id);
     const role = await getUserRole(user.id);
 
-    const userResponse = formatUserResponse(user, role);
-    if (zones.length > 0) {
-      userResponse.zones = zones;
-    }
-
-    return res.json({ user: userResponse, accessToken, refreshToken: newRefreshToken, expiresIn: ACCESS_EXPIRES });
+    return res.json({ user: formatUserResponse(user, role), accessToken, refreshToken: newRefreshToken, expiresIn: ACCESS_EXPIRES });
   } catch (err) {
     console.error('Refresh error:', err);
     return res.status(500).json({ message: 'Could not refresh tokens' });
