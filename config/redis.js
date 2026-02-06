@@ -1,10 +1,16 @@
-import 'dotenv/config'; // or require('dotenv').config();
+// backend/config/redis.js
 import Redis from 'ioredis';
 
-const redis = new Redis(process.env.REDIS_URL);
+const redisUrl = process.env.REDIS_URL;
+
+if (!redisUrl) {
+  throw new Error('REDIS_URL is not defined!');
+}
+
+export const redis = new Redis(redisUrl, {
+  tls: {},               // Required for Upstash rediss://
+  maxRetriesPerRequest: 5 // Optional: reduce long retry loops
+});
 
 redis.on('connect', () => console.log('✅ Redis connected'));
 redis.on('error', (err) => console.error('Redis error', err));
-
-export default redis;
-export const getRedisClient = () => redis;
